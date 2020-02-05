@@ -101,6 +101,17 @@ There are two options here: we could use the strict interpretation and say that
 Alternatively the user could be required to use a type assertion: `const x = (foo as Array<Q>)[0]` or `const x = (foo as { 0: Q })[0]`, or `const x = (foo as [Q])[0]`.  
 There are similar cases in regular TypeScript for tuples vs arrays, so we should endeavor to match that behavior.
 
+## Implimentation Ideas
+1. Add a new top type `Q` (the actual keyword may differ), which behaves similar to `any`
+2. The typescript compiler should produce a program graph with types as part of the compilation/typechecking process (not sure if explicit), so we can rely on using that.
+3. we can use some internal methods (such as `symbolWalker` and `visitType`) to traverse and extract the section of the program that deals with symbols/expressions/statements of type `Q`
+4. After we have our own subgraph of just the relevant program, we apply some algorithm to determine what each instance of `Q` should be,
+and build up the final types.
+
+Or we can go out of band using a program like ANTLR or Babel to statically analyze typescript source code. The problem with doing this is that we would have to analyze the entire program and construct our own program graph. This would mean reimplementing a lot of typescript's type system.
+
+The problem with modifying TypeScript's compiler is that it is absolutely huge, and there is no public documentation on how to modify or add to it.
+
 # TypeScript
 
 [![Build Status](https://travis-ci.org/microsoft/TypeScript.svg?branch=master)](https://travis-ci.org/microsoft/TypeScript)
