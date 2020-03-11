@@ -34,6 +34,7 @@ namespace ts {
     export type KeywordSyntaxKind =
         | SyntaxKind.AbstractKeyword
         | SyntaxKind.AnyKeyword
+        | SyntaxKind.InferredKeyword
         | SyntaxKind.AsKeyword
         | SyntaxKind.AssertsKeyword
         | SyntaxKind.BigIntKeyword
@@ -259,6 +260,7 @@ namespace ts {
         AsKeyword,
         AssertsKeyword,
         AnyKeyword,
+        InferredKeyword,
         AsyncKeyword,
         AwaitKeyword,
         BooleanKeyword,
@@ -1192,6 +1194,7 @@ namespace ts {
     export interface KeywordTypeNode extends TypeNode {
         kind:
             | SyntaxKind.AnyKeyword
+            | SyntaxKind.InferredKeyword
             | SyntaxKind.UnknownKeyword
             | SyntaxKind.NumberKeyword
             | SyntaxKind.BigIntKeyword
@@ -4254,31 +4257,32 @@ namespace ts {
     export const enum TypeFlags {
         Any             = 1 << 0,
         Unknown         = 1 << 1,
-        String          = 1 << 2,
-        Number          = 1 << 3,
-        Boolean         = 1 << 4,
-        Enum            = 1 << 5,
-        BigInt          = 1 << 6,
-        StringLiteral   = 1 << 7,
-        NumberLiteral   = 1 << 8,
-        BooleanLiteral  = 1 << 9,
-        EnumLiteral     = 1 << 10,  // Always combined with StringLiteral, NumberLiteral, or Union
-        BigIntLiteral   = 1 << 11,
-        ESSymbol        = 1 << 12,  // Type of symbol primitive introduced in ES6
-        UniqueESSymbol  = 1 << 13,  // unique symbol
-        Void            = 1 << 14,
-        Undefined       = 1 << 15,
-        Null            = 1 << 16,
-        Never           = 1 << 17,  // Never type
-        TypeParameter   = 1 << 18,  // Type parameter
-        Object          = 1 << 19,  // Object type
-        Union           = 1 << 20,  // Union (T | U)
-        Intersection    = 1 << 21,  // Intersection (T & U)
-        Index           = 1 << 22,  // keyof T
-        IndexedAccess   = 1 << 23,  // T[K]
-        Conditional     = 1 << 24,  // T extends U ? X : Y
-        Substitution    = 1 << 25,  // Type parameter substitution
-        NonPrimitive    = 1 << 26,  // intrinsic object type
+        Inferred        = 1 << 2,
+        String          = 1 << 3,
+        Number          = 1 << 4,
+        Boolean         = 1 << 5,
+        Enum            = 1 << 6,
+        BigInt          = 1 << 7,
+        StringLiteral   = 1 << 8,
+        NumberLiteral   = 1 << 9,
+        BooleanLiteral  = 1 << 10,
+        EnumLiteral     = 1 << 11,  // Always combined with StringLiteral, NumberLiteral, or Union
+        BigIntLiteral   = 1 << 12,
+        ESSymbol        = 1 << 13,  // Type of symbol primitive introduced in ES6
+        UniqueESSymbol  = 1 << 14,  // unique symbol
+        Void            = 1 << 15,
+        Undefined       = 1 << 16,
+        Null            = 1 << 17,
+        Never           = 1 << 18,  // Never type
+        TypeParameter   = 1 << 19,  // Type parameter
+        Object          = 1 << 20,  // Object type
+        Union           = 1 << 21,  // Union (T | U)
+        Intersection    = 1 << 22,  // Intersection (T & U)
+        Index           = 1 << 23,  // keyof T
+        IndexedAccess   = 1 << 24,  // T[K]
+        Conditional     = 1 << 25,  // T extends U ? X : Y
+        Substitution    = 1 << 26,  // Type parameter substitution
+        NonPrimitive    = 1 << 27,  // intrinsic object type
 
         /* @internal */
         AnyOrUnknown = Any | Unknown,
@@ -4293,7 +4297,7 @@ namespace ts {
         DefinitelyFalsy = StringLiteral | NumberLiteral | BigIntLiteral | BooleanLiteral | Void | Undefined | Null,
         PossiblyFalsy = DefinitelyFalsy | String | Number | BigInt | Boolean,
         /* @internal */
-        Intrinsic = Any | Unknown | String | Number | BigInt | Boolean | BooleanLiteral | ESSymbol | Void | Undefined | Null | Never | NonPrimitive,
+        Intrinsic = Any | Unknown | Inferred | String | Number | BigInt | Boolean | BooleanLiteral | ESSymbol | Void | Undefined | Null | Never | NonPrimitive,
         /* @internal */
         Primitive = String | Number | BigInt | Boolean | Enum | EnumLiteral | ESSymbol | Void | Undefined | Null | Literal | UniqueESSymbol,
         StringLike = String | StringLiteral,
@@ -4313,18 +4317,18 @@ namespace ts {
         Instantiable = InstantiableNonPrimitive | InstantiablePrimitive,
         StructuredOrInstantiable = StructuredType | Instantiable,
         /* @internal */
-        ObjectFlagsType = Any | Nullable | Never | Object | Union | Intersection,
+        ObjectFlagsType = Any | Inferred | Nullable | Never | Object | Union | Intersection,
         /* @internal */
         Simplifiable = IndexedAccess | Conditional,
         // 'Narrowable' types are types where narrowing actually narrows.
         // This *should* be every type other than null, undefined, void, and never
-        Narrowable = Any | Unknown | StructuredOrInstantiable | StringLike | NumberLike | BigIntLike | BooleanLike | ESSymbol | UniqueESSymbol | NonPrimitive,
-        NotUnionOrUnit = Any | Unknown | ESSymbol | Object | NonPrimitive,
+        Narrowable = Any | Unknown | Inferred | StructuredOrInstantiable | StringLike | NumberLike | BigIntLike | BooleanLike | ESSymbol | UniqueESSymbol | NonPrimitive,
+        NotUnionOrUnit = Any | Unknown | Inferred | ESSymbol | Object | NonPrimitive,
         /* @internal */
-        NotPrimitiveUnion = Any | Unknown | Enum | Void | Never | StructuredOrInstantiable,
+        NotPrimitiveUnion = Any | Unknown | Inferred | Enum | Void | Never | StructuredOrInstantiable,
         // The following flags are aggregated during union and intersection type construction
         /* @internal */
-        IncludesMask = Any | Unknown | Primitive | Never | Object | Union | NonPrimitive,
+        IncludesMask = Any | Unknown | Inferred | Primitive | Never | Object | Union | NonPrimitive,
         // The following flags are used for different purposes during union and intersection type construction
         /* @internal */
         IncludesStructuredOrInstantiable = TypeParameter,

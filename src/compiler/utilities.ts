@@ -1076,6 +1076,7 @@ namespace ts {
 
         switch (node.kind) {
             case SyntaxKind.AnyKeyword:
+            case SyntaxKind.InferredKeyword:
             case SyntaxKind.UnknownKeyword:
             case SyntaxKind.NumberKeyword:
             case SyntaxKind.BigIntKeyword:
@@ -4973,6 +4974,7 @@ namespace ts {
     export function isTypeNodeKind(kind: SyntaxKind) {
         return (kind >= SyntaxKind.FirstTypeNode && kind <= SyntaxKind.LastTypeNode)
             || kind === SyntaxKind.AnyKeyword
+            || kind === SyntaxKind.InferredKeyword
             || kind === SyntaxKind.UnknownKeyword
             || kind === SyntaxKind.NumberKeyword
             || kind === SyntaxKind.BigIntKeyword

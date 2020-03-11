@@ -659,6 +659,7 @@ namespace ts {
         const resolvingSymbol = createSymbol(0, InternalSymbolName.Resolving);
 
         const anyType = createIntrinsicType(TypeFlags.Any, "any");
+        const inferredQueryType = createIntrinsicType(TypeFlags.Inferred, "inferred");
         const autoType = createIntrinsicType(TypeFlags.Any, "any");
         const wildcardType = createIntrinsicType(TypeFlags.Any, "any");
         const errorType = createIntrinsicType(TypeFlags.Any, "error");
@@ -4019,6 +4020,9 @@ namespace ts {
                 return context.truncating = !(context.flags & NodeBuilderFlags.NoTruncation) && context.approximateLength > defaultMaximumTruncationLength;
             }
 
+            /**
+             * formats a type for display/print by tsserver
+             */
             function typeToTypeNodeHelper(type: Type, context: NodeBuilderContext): TypeNode {
                 if (cancellationToken && cancellationToken.throwIfCancellationRequested) {
                     cancellationToken.throwIfCancellationRequested();
@@ -4037,6 +4041,10 @@ namespace ts {
                 }
                 if (type.flags & TypeFlags.Unknown) {
                     return createKeywordTypeNode(SyntaxKind.UnknownKeyword);
+                }
+                if (type.flags & TypeFlags.Inferred) {
+                    context.approximateLength += 8;
+                    return createKeywordTypeNode(SyntaxKind.InferredKeyword);
                 }
                 if (type.flags & TypeFlags.String) {
                     context.approximateLength += 6;
@@ -4524,8 +4532,11 @@ namespace ts {
                 }
             }
 
+            /**
+             * called to show type information in tsserver when it should be collapsed or elided
+             * defaults to any if truncation is disabled
+             */
             function createElidedInformationPlaceholder(context: NodeBuilderContext) {
-                context.approximateLength += 3;
                 if (!(context.flags & NodeBuilderFlags.NoTruncation)) {
                     return createTypeReferenceNode(createIdentifier("..."), /*typeArguments*/ undefined);
                 }
@@ -6972,6 +6983,10 @@ namespace ts {
             return type && (type.flags & TypeFlags.Any) !== 0;
         }
 
+        function isTypeInferred(type: Type | undefined) {
+            return type && (type.flags & TypeFlags.Inferred) !== 0;
+        }
+
         // Return the type of a binding element parent. We check SymbolLinks first to see if a type has been
         // assigned by contextual typing.
         function getTypeForBindingElementParent(node: BindingElementGrandparent) {
@@ -7086,7 +7101,7 @@ namespace ts {
             const pattern = declaration.parent;
             let parentType = getTypeForBindingElementParent(pattern.parent);
             // If no type or an any type was inferred for parent, infer that for the binding element
-            if (!parentType || isTypeAny(parentType)) {
+            if (!parentType || isTypeAny(parentType) || isTypeInferred(parentType)) {
                 return parentType;
             }
             // Relax null check on ambient destructuring parameters, since the parameters have no implementation and are just documentation
@@ -8583,6 +8598,7 @@ namespace ts {
         function isThislessType(node: TypeNode): boolean {
             switch (node.kind) {
                 case SyntaxKind.AnyKeyword:
+                case SyntaxKind.InferredKeyword:
                 case SyntaxKind.UnknownKeyword:
                 case SyntaxKind.StringKeyword:
                 case SyntaxKind.NumberKeyword:
@@ -11679,10 +11695,12 @@ namespace ts {
 
         function addTypeToUnion(typeSet: Type[], includes: TypeFlags, type: Type) {
             const flags = type.flags;
+            // if type is already a union
             if (flags & TypeFlags.Union) {
                 return addTypesToUnion(typeSet, includes, (<UnionType>type).types);
             }
             // We ignore 'never' types in unions
+            // if type is not never
             if (!(flags & TypeFlags.Never)) {
                 includes |= flags & TypeFlags.IncludesMask;
                 if (flags & TypeFlags.StructuredOrInstantiable) includes |= TypeFlags.IncludesStructuredOrInstantiable;
@@ -11801,6 +11819,10 @@ namespace ts {
                 if (includes & TypeFlags.AnyOrUnknown) {
                     return includes & TypeFlags.Any ? includes & TypeFlags.IncludesWildcard ? wildcardType : anyType : unknownType;
                 }
+                // has same behavior as AnyOrUnknown above, but for Inferred
+                if (includes & TypeFlags.Inferred) {
+                    return inferredQueryType;
+                }
                 switch (unionReduction) {
                     case UnionReduction.Literal:
                         if (includes & (TypeFlags.Literal | TypeFlags.UniqueESSymbol)) {
@@ -11903,7 +11925,9 @@ namespace ts {
                 }
             }
             else {
-                if (flags & TypeFlags.AnyOrUnknown) {
+                // unknown, any, and inferred are all absorbed in an intersection
+                // do nothing unless the type is a wildcard (i.e. an index)
+                if (flags & TypeFlags.AnyOrUnknown || flags & TypeFlags.Inferred) {
                     if (type === wildcardType) includes |= TypeFlags.IncludesWildcard;
                 }
                 else if ((strictNullChecks || !(flags & TypeFlags.Nullable)) && !typeSet.has(type.id.toString())) {
@@ -12062,6 +12086,9 @@ namespace ts {
             }
             if (includes & TypeFlags.Any) {
                 return includes & TypeFlags.IncludesWildcard ? wildcardType : anyType;
+            }
+            if (includes & TypeFlags.Inferred) {
+                return includes & TypeFlags.IncludesWildcard ? wildcardType : inferredQueryType;
             }
             if (!strictNullChecks && includes & TypeFlags.Nullable) {
                 return includes & TypeFlags.Undefined ? undefinedType : nullType;
@@ -14641,7 +14668,7 @@ namespace ts {
         function isSimpleTypeRelatedTo(source: Type, target: Type, relation: Map<RelationComparisonResult>, errorReporter?: ErrorReporter) {
             const s = source.flags;
             const t = target.flags;
-            if (t & TypeFlags.AnyOrUnknown || s & TypeFlags.Never || source === wildcardType) return true;
+            if (t & TypeFlags.AnyOrUnknown || t & TypeFlags.Inferred || s & TypeFlags.Never || source === wildcardType) return true;
             if (t & TypeFlags.Never) return false;
             if (s & TypeFlags.StringLike && t & TypeFlags.String) return true;
             if (s & TypeFlags.StringLiteral && s & TypeFlags.EnumLiteral &&
@@ -14665,7 +14692,9 @@ namespace ts {
             if (s & TypeFlags.Null && (!strictNullChecks || t & TypeFlags.Null)) return true;
             if (s & TypeFlags.Object && t & TypeFlags.NonPrimitive) return true;
             if (relation === assignableRelation || relation === comparableRelation) {
+                // any and inferred are comparable and assignable to all
                 if (s & TypeFlags.Any) return true;
+                if (s & TypeFlags.Inferred) return true;
                 // Type number or any numeric literal type is assignable to any numeric enum type or any
                 // numeric enum literal type. This rule exists for backwards compatibility reasons because
                 // bit-flag enum types sometimes look like literal enum types with numeric literal values.

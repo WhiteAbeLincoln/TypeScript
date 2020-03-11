@@ -112,6 +112,27 @@ Or we can go out of band using a program like ANTLR or Babel to statically analy
 
 The problem with modifying TypeScript's compiler is that it is absolutely huge, and there is no public documentation on how to modify or add to it.
 
+## References
++ https://github.com/masaeedu/TypeScript - adds basic type inference for function parameters
++ https://github.com/microsoft/TypeScript/issues/15114 - discussion on adding type inference for function params
++ https://github.com/muon52/TypeScript - adds `const` lifetime annotation
++ https://github.com/microsoft/TypeScript/pull/24439 - adds `unknown` type. Good reference for adding new type keyword and checker rules
+
+## Notes on adding new types
+### Important functions in `checker.ts`
++ `getUnionType` :: gets the type of a union from flags and type array
++ `addTypeToUnion` :: adds a type to a union
++ `addTypeToIntersection` :: adds a type to an intersection
++ `getIntersectionType` :: gets the type
+of an intersection from type array
++ `isSimpleTypeRelatedTo`, `isTypeRelatedTo` :: allows checking if two types are related using some relation (such as identity - they are equal or equivalent, subtype, strict subtype, assignable, comparable)
+### Things to look for in `checker.ts`
++ `TypeFlags.Any`
++ `anyType`
++ `TypeFlags.AnyOrUnknown` :: common behavior between any and unknown types, which our inferred type will share
+
+
+
 # TypeScript
 
 [![Build Status](https://travis-ci.org/microsoft/TypeScript.svg?branch=master)](https://travis-ci.org/microsoft/TypeScript)

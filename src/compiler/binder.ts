@@ -4164,6 +4164,7 @@ namespace ts {
                 break;
 
             case SyntaxKind.AnyKeyword:
+            case SyntaxKind.InferredKeyword:
             case SyntaxKind.NumberKeyword:
             case SyntaxKind.BigIntKeyword:
             case SyntaxKind.NeverKeyword:
@@ -4356,6 +4357,7 @@ namespace ts {
             case SyntaxKind.SetAccessor:
                 return TransformFlags.MethodOrAccessorExcludes;
             case SyntaxKind.AnyKeyword:
+            case SyntaxKind.InferredKeyword:
             case SyntaxKind.NumberKeyword:
             case SyntaxKind.BigIntKeyword:
             case SyntaxKind.NeverKeyword:
