@@ -8208,7 +8208,7 @@ namespace ts {
                     error(type.symbol.valueDeclaration, Diagnostics._0_is_referenced_directly_or_indirectly_in_its_own_base_expression, symbolToString(type.symbol));
                     return type.resolvedBaseConstructorType = errorType;
                 }
-                if (!(baseConstructorType.flags & TypeFlags.Any) && baseConstructorType !== nullWideningType && !isConstructorType(baseConstructorType)) {
+                if (!(baseConstructorType.flags & (TypeFlags.Any | TypeFlags.Inferred)) && baseConstructorType !== nullWideningType && !isConstructorType(baseConstructorType)) {
                     const err = error(baseTypeNode.expression, Diagnostics.Type_0_is_not_a_constructor_function_type, typeToString(baseConstructorType));
                     if (baseConstructorType.flags & TypeFlags.TypeParameter) {
                         const constraint = getConstraintFromTypeParameter(baseConstructorType);
@@ -9504,7 +9504,7 @@ namespace ts {
         // bound includes those keys that are known to always be present, for example because
         // because of constraints on type parameters (e.g. 'keyof T' for a constrained T).
         function getLowerBoundOfKeyType(type: Type): Type {
-            if (type.flags & (TypeFlags.Any | TypeFlags.Primitive)) {
+            if (type.flags & (TypeFlags.Any | TypeFlags.Inferred | TypeFlags.Primitive)) {
                 return type;
             }
             if (type.flags & TypeFlags.Index) {
@@ -11222,7 +11222,9 @@ namespace ts {
         }
 
         function getSubstitutionType(typeVariable: TypeVariable, substitute: Type) {
-            if (substitute.flags & TypeFlags.AnyOrUnknown || substitute === typeVariable) {
+            // in a conditional (T extends S ? foo(X) : bar(X)), all types T extend unknown, any, inferred, or T itself
+            // therefore we substitute T for X in foo
+            if (substitute.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred) || substitute === typeVariable) {
                 return typeVariable;
             }
             const id = `${getTypeId(typeVariable)}>${getTypeId(substitute)}`;
@@ -11821,7 +11823,7 @@ namespace ts {
                 }
                 // has same behavior as AnyOrUnknown above, but for Inferred
                 if (includes & TypeFlags.Inferred) {
-                    return inferredQueryType;
+                    return includes & TypeFlags.IncludesWildcard ? wildcardType : inferredQueryType;
                 }
                 switch (unionReduction) {
                     case UnionReduction.Literal:
@@ -11927,7 +11929,7 @@ namespace ts {
             else {
                 // unknown, any, and inferred are all absorbed in an intersection
                 // do nothing unless the type is a wildcard (i.e. an index)
-                if (flags & TypeFlags.AnyOrUnknown || flags & TypeFlags.Inferred) {
+                if (flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred)) {
                     if (type === wildcardType) includes |= TypeFlags.IncludesWildcard;
                 }
                 else if ((strictNullChecks || !(flags & TypeFlags.Nullable)) && !typeSet.has(type.id.toString())) {
@@ -12602,7 +12604,7 @@ namespace ts {
             // an expression. This is to preserve backwards compatibility. For example, an element access 'this["foo"]'
             // has always been resolved eagerly using the constraint type of 'this' at the given location.
             if (isGenericIndexType(indexType) || !(accessNode && accessNode.kind !== SyntaxKind.IndexedAccessType) && isGenericObjectType(objectType)) {
-                if (objectType.flags & TypeFlags.AnyOrUnknown) {
+                if (objectType.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred)) {
                     return objectType;
                 }
                 // Defer the operation by creating an indexed access type.
@@ -12709,11 +12711,11 @@ namespace ts {
             const inferredExtendsType = combinedMapper ? instantiateType(root.extendsType, combinedMapper) : extendsType;
             // We attempt to resolve the conditional type only when the check and extends types are non-generic
             if (!checkTypeInstantiable && !maybeTypeOfKind(inferredExtendsType, TypeFlags.Instantiable | TypeFlags.GenericMappedType)) {
-                if (inferredExtendsType.flags & TypeFlags.AnyOrUnknown) {
+                if (inferredExtendsType.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred)) {
                     return instantiateType(root.trueType, combinedMapper || mapper);
                 }
                 // Return union of trueType and falseType for 'any' since it matches anything
-                if (checkType.flags & TypeFlags.Any) {
+                if (checkType.flags & (TypeFlags.Any | TypeFlags.Inferred)) {
                     return getUnionType([instantiateType(root.trueType, combinedMapper || mapper), instantiateType(root.falseType, mapper)]);
                 }
                 // Return falseType for a definitely false extends check. We check an instantiations of the two
@@ -12984,6 +12986,9 @@ namespace ts {
         function getSpreadType(left: Type, right: Type, symbol: Symbol | undefined, objectFlags: ObjectFlags, readonly: boolean): Type {
             if (left.flags & TypeFlags.Any || right.flags & TypeFlags.Any) {
                 return anyType;
+            }
+            if (left.flags & TypeFlags.Inferred || right.flags & TypeFlags.Inferred) {
+                return inferredQueryType;
             }
             if (left.flags & TypeFlags.Unknown || right.flags & TypeFlags.Unknown) {
                 return unknownType;
@@ -13590,7 +13595,7 @@ namespace ts {
                 const mappedTypeVariable = instantiateType(typeVariable, mapper);
                 if (typeVariable !== mappedTypeVariable) {
                     return mapType(mappedTypeVariable, t => {
-                        if (t.flags & (TypeFlags.AnyOrUnknown | TypeFlags.InstantiableNonPrimitive | TypeFlags.Object | TypeFlags.Intersection) && t !== wildcardType && t !== errorType) {
+                        if (t.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred | TypeFlags.InstantiableNonPrimitive | TypeFlags.Object | TypeFlags.Intersection) && t !== wildcardType && t !== errorType) {
                             const replacementMapper = createReplacementMapper(typeVariable, t, mapper);
                             return isArrayType(t) ? instantiateMappedArrayType(t, type, replacementMapper) :
                                 isTupleType(t) ? instantiateMappedTupleType(t, type, replacementMapper) :
@@ -13759,7 +13764,7 @@ namespace ts {
                 }
                 else {
                     const sub = instantiateType((<SubstitutionType>type).substitute, mapper);
-                    if (sub.flags & TypeFlags.AnyOrUnknown || isTypeAssignableTo(getRestrictiveInstantiation(maybeVariable), getRestrictiveInstantiation(sub))) {
+                    if (sub.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred) || isTypeAssignableTo(getRestrictiveInstantiation(maybeVariable), getRestrictiveInstantiation(sub))) {
                         return maybeVariable;
                     }
                     return sub;
@@ -13769,12 +13774,14 @@ namespace ts {
         }
 
         function getPermissiveInstantiation(type: Type) {
-            return type.flags & (TypeFlags.Primitive | TypeFlags.AnyOrUnknown | TypeFlags.Never) ? type :
+            // primitives, any, unknown, and never don't have to be instantiated
+            return type.flags & (TypeFlags.Primitive | TypeFlags.AnyOrUnknown | TypeFlags.Inferred | TypeFlags.Never) ? type :
                 type.permissiveInstantiation || (type.permissiveInstantiation = instantiateType(type, permissiveMapper));
         }
 
         function getRestrictiveInstantiation(type: Type) {
-            if (type.flags & (TypeFlags.Primitive | TypeFlags.AnyOrUnknown | TypeFlags.Never)) {
+            // primitives, any, unknown, and never don't have to be instantiated
+            if (type.flags & (TypeFlags.Primitive | TypeFlags.AnyOrUnknown | TypeFlags.Inferred | TypeFlags.Never)) {
                 return type;
             }
             if (type.restrictiveInstantiation) {
@@ -14668,7 +14675,7 @@ namespace ts {
         function isSimpleTypeRelatedTo(source: Type, target: Type, relation: Map<RelationComparisonResult>, errorReporter?: ErrorReporter) {
             const s = source.flags;
             const t = target.flags;
-            if (t & TypeFlags.AnyOrUnknown || t & TypeFlags.Inferred || s & TypeFlags.Never || source === wildcardType) return true;
+            if (t & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred) || s & TypeFlags.Never || source === wildcardType) return true;
             if (t & TypeFlags.Never) return false;
             if (s & TypeFlags.StringLike && t & TypeFlags.String) return true;
             if (s & TypeFlags.StringLiteral && s & TypeFlags.EnumLiteral &&
@@ -19966,12 +19973,12 @@ namespace ts {
                 const valueType = getTypeOfExpression(value);
                 // Note that we include any and unknown in the exclusion test because their domain includes null and undefined.
                 const removeNullable = equalsOperator !== assumeTrue && everyType(valueType, t => !!(t.flags & nullableFlags)) ||
-                    equalsOperator === assumeTrue && everyType(valueType, t => !(t.flags & (TypeFlags.AnyOrUnknown | nullableFlags)));
+                    equalsOperator === assumeTrue && everyType(valueType, t => !(t.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred | nullableFlags)));
                 return removeNullable ? getTypeWithFacts(type, TypeFacts.NEUndefinedOrNull) : type;
             }
 
             function narrowTypeByEquality(type: Type, operator: SyntaxKind, value: Expression, assumeTrue: boolean): Type {
-                if (type.flags & TypeFlags.Any) {
+                if (type.flags & (TypeFlags.Any | TypeFlags.Inferred)) {
                     return type;
                 }
                 if (operator === SyntaxKind.ExclamationEqualsToken || operator === SyntaxKind.ExclamationEqualsEqualsToken) {
@@ -20605,7 +20612,7 @@ namespace ts {
             // the entire control flow graph from the variable's declaration (i.e. when the flow container and
             // declaration container are the same).
             const assumeInitialized = isParameter || isAlias || isOuterVariable || isSpreadDestructuringAssignmentTarget || isModuleExports || isBindingElement(declaration) ||
-                type !== autoType && type !== autoArrayType && (!strictNullChecks || (type.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Void)) !== 0 ||
+                type !== autoType && type !== autoArrayType && (!strictNullChecks || (type.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred | TypeFlags.Void)) !== 0 ||
                 isInTypeQuery(node) || node.parent.kind === SyntaxKind.ExportSpecifier) ||
                 node.parent.kind === SyntaxKind.NonNullExpression ||
                 declaration.kind === SyntaxKind.VariableDeclaration && (<VariableDeclaration>declaration).exclamationToken ||
@@ -22521,7 +22528,7 @@ namespace ts {
                     return isValidSpreadType(constraint);
                 }
             }
-            return !!(type.flags & (TypeFlags.Any | TypeFlags.NonPrimitive | TypeFlags.Object | TypeFlags.InstantiableNonPrimitive) ||
+            return !!(type.flags & (TypeFlags.Any | TypeFlags.Inferred | TypeFlags.NonPrimitive | TypeFlags.Object | TypeFlags.InstantiableNonPrimitive) ||
                 getFalsyFlags(type) & TypeFlags.DefinitelyFalsy && isValidSpreadType(removeDefinitelyFalsyTypes(type)) ||
                 type.flags & TypeFlags.UnionOrIntersection && every((<UnionOrIntersectionType>type).types, isValidSpreadType));
         }
@@ -26895,7 +26902,7 @@ namespace ts {
 
             const operandType = checkExpression(node.expression);
             const awaitedType = checkAwaitedType(operandType, node, Diagnostics.Type_of_await_operand_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member);
-            if (awaitedType === operandType && awaitedType !== errorType && !(operandType.flags & TypeFlags.AnyOrUnknown)) {
+            if (awaitedType === operandType && awaitedType !== errorType && !(operandType.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred))) {
                 addErrorOrSuggestion(/*isError*/ false, createDiagnosticForNode(node, Diagnostics.await_has_no_effect_on_the_type_of_this_expression));
             }
             return awaitedType;
@@ -26981,7 +26988,7 @@ namespace ts {
 
         function getUnaryResultType(operandType: Type): Type {
             if (maybeTypeOfKind(operandType, TypeFlags.BigIntLike)) {
-                return isTypeAssignableToKind(operandType, TypeFlags.AnyOrUnknown) || maybeTypeOfKind(operandType, TypeFlags.NumberLike)
+                return isTypeAssignableToKind(operandType, TypeFlags.AnyOrUnknown | TypeFlags.Inferred) || maybeTypeOfKind(operandType, TypeFlags.NumberLike)
                     ? numberOrBigIntType
                     : bigintType;
             }
@@ -27010,7 +27017,7 @@ namespace ts {
             if (source.flags & kind) {
                 return true;
             }
-            if (strict && source.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Void | TypeFlags.Undefined | TypeFlags.Null)) {
+            if (strict && source.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred | TypeFlags.Void | TypeFlags.Undefined | TypeFlags.Null)) {
                 return false;
             }
             return !!(kind & TypeFlags.NumberLike) && isTypeAssignableTo(source, numberType) ||
@@ -27477,7 +27484,7 @@ namespace ts {
                         const rightOk = checkArithmeticOperandType(right, rightType, Diagnostics.The_right_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
                         let resultType: Type;
                         // If both are any or unknown, allow operation; assume it will resolve to number
-                        if ((isTypeAssignableToKind(leftType, TypeFlags.AnyOrUnknown) && isTypeAssignableToKind(rightType, TypeFlags.AnyOrUnknown)) ||
+                        if ((isTypeAssignableToKind(leftType, TypeFlags.AnyOrUnknown | TypeFlags.Inferred) && isTypeAssignableToKind(rightType, TypeFlags.AnyOrUnknown | TypeFlags.Inferred)) ||
                             // Or, if neither could be bigint, implicit coercion results in a number result
                             !(maybeTypeOfKind(leftType, TypeFlags.BigIntLike) || maybeTypeOfKind(rightType, TypeFlags.BigIntLike))
                         ) {
@@ -27543,7 +27550,7 @@ namespace ts {
                         // If both types have an awaited type of one of these, we'll assume the user
                         // might be missing an await without doing an exhaustive check that inserting
                         // await(s) will actually be a completely valid binary expression.
-                        const closeEnoughKind = TypeFlags.NumberLike | TypeFlags.BigIntLike | TypeFlags.StringLike | TypeFlags.AnyOrUnknown;
+                        const closeEnoughKind = TypeFlags.NumberLike | TypeFlags.BigIntLike | TypeFlags.StringLike | TypeFlags.AnyOrUnknown | TypeFlags.Inferred;
                         reportOperatorError((left, right) =>
                             isTypeAssignableToKind(left, closeEnoughKind) &&
                             isTypeAssignableToKind(right, closeEnoughKind));
@@ -31907,7 +31914,7 @@ namespace ts {
 
         function isUnwrappedReturnTypeVoidOrAny(func: SignatureDeclaration, returnType: Type): boolean {
             const unwrappedReturnType = unwrapReturnType(returnType, getFunctionFlags(func));
-            return !!unwrappedReturnType && maybeTypeOfKind(unwrappedReturnType, TypeFlags.Void | TypeFlags.AnyOrUnknown);
+            return !!unwrappedReturnType && maybeTypeOfKind(unwrappedReturnType, TypeFlags.Void | TypeFlags.AnyOrUnknown | TypeFlags.Inferred);
         }
 
         function checkReturnStatement(node: ReturnStatement) {
@@ -32706,7 +32713,7 @@ namespace ts {
                     const propName = (<PropertyDeclaration>member).name;
                     if (isIdentifier(propName) || isPrivateIdentifier(propName)) {
                         const type = getTypeOfSymbol(getSymbolOfNode(member));
-                        if (!(type.flags & TypeFlags.AnyOrUnknown || getFalsyFlags(type) & TypeFlags.Undefined)) {
+                        if (!(type.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred) || getFalsyFlags(type) & TypeFlags.Undefined)) {
                             if (!constructor || !isPropertyInitializedInConstructor(propName, type, constructor)) {
                                 error(member.name, Diagnostics.Property_0_has_no_initializer_and_is_not_definitely_assigned_in_the_constructor, declarationNameToString(propName));
                             }
@@ -35047,7 +35054,7 @@ namespace ts {
             if (type === errorType) {
                 return TypeReferenceSerializationKind.Unknown;
             }
-            else if (type.flags & TypeFlags.AnyOrUnknown) {
+            else if (type.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred)) {
                 return TypeReferenceSerializationKind.ObjectType;
             }
             else if (isTypeAssignableToKind(type, TypeFlags.Void | TypeFlags.Nullable | TypeFlags.Never)) {

@@ -119,6 +119,15 @@ The problem with modifying TypeScript's compiler is that it is absolutely huge, 
 + https://github.com/microsoft/TypeScript/pull/24439 - adds `unknown` type. Good reference for adding new type keyword and checker rules
 
 ## Notes on adding new types
+### Glossary
+#### Substitution Type
+Substitution types are created for type parameters or indexed access types that occur in the true branch of a conditional type. For example, in `T extends string ? Foo<T> : Bar<T>`, the reference to `T` in `Foo<T>` is resolved as a substitution type that substitutes `string & T` for `T`.
+Thus, if Foo has a `string` constraint on its type parameter, `T` will satisfy it. Substitution types disappear upon instantiation (just like type parameters).
+### Conditional Type
+`C extends E ? T : F`  
+Immediately resolve if both check (C) and extend (E) are non-generic
++ if E is unknown, any (or inferred), return true branch (T), since all things extend any and inferred
++ if C is any (or inferred), return union of T and F, since it matches anything
 ### Important functions in `checker.ts`
 + `getUnionType` :: gets the type of a union from flags and type array
 + `addTypeToUnion` :: adds a type to a union
@@ -126,10 +135,15 @@ The problem with modifying TypeScript's compiler is that it is absolutely huge, 
 + `getIntersectionType` :: gets the type
 of an intersection from type array
 + `isSimpleTypeRelatedTo`, `isTypeRelatedTo` :: allows checking if two types are related using some relation (such as identity - they are equal or equivalent, subtype, strict subtype, assignable, comparable)
++ `getReturnTypeFromBody` :: infers a return type from a function body
++ `checkAndAggregateReturnExpressionTypes` :: helper fn that actually infers the return types from return statements in function body
++ `getSubstitutionType` :: gets the substitution type for a conditionditional type
++ `getConditionalType` :: gets the conditional type
 ### Things to look for in `checker.ts`
 + `TypeFlags.Any`
 + `anyType`
 + `TypeFlags.AnyOrUnknown` :: common behavior between any and unknown types, which our inferred type will share
++ `isTypeAny` :: predicate to check if a type is any
 
 
 
