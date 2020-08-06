@@ -702,6 +702,7 @@ namespace ts {
         const stringNumberSymbolType = getUnionType([stringType, numberType, esSymbolType]);
         const keyofConstraintType = keyofStringsOnly ? stringType : stringNumberSymbolType;
         const numberOrBigIntType = getUnionType([numberType, bigintType]);
+        const jsonPrimitiveType = getUnionType([stringType, numberType, booleanType, nullType]);
 
         const emptyObjectType = createAnonymousType(undefined, emptySymbols, emptyArray, emptyArray, undefined, undefined);
         const emptyJsxObjectType = createAnonymousType(undefined, emptySymbols, emptyArray, emptyArray, undefined, undefined);
@@ -10270,6 +10271,11 @@ namespace ts {
             if (type.flags & TypeFlags.UnionOrIntersection) {
                 return getPropertyOfUnionOrIntersectionType(<UnionOrIntersectionType>type, name);
             }
+            if (type.flags & TypeFlags.Inferred) {
+                const s = createSymbol(SymbolFlags.Property, name);
+                s.type = inferredQueryType;
+                return s;
+            }
             return undefined;
         }
 
@@ -13231,6 +13237,8 @@ namespace ts {
                 case SyntaxKind.JSDocAllType:
                 case SyntaxKind.JSDocUnknownType:
                     return anyType;
+                case SyntaxKind.InferredKeyword:
+                    return inferredQueryType;
                 case SyntaxKind.UnknownKeyword:
                     return unknownType;
                 case SyntaxKind.StringKeyword:
@@ -14672,10 +14680,16 @@ namespace ts {
             return true;
         }
 
+        function getCurrentInferred() {
+          return jsonPrimitiveType;
+        }
+
         function isSimpleTypeRelatedTo(source: Type, target: Type, relation: Map<RelationComparisonResult>, errorReporter?: ErrorReporter) {
             const s = source.flags;
             const t = target.flags;
-            if (t & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred) || s & TypeFlags.Never || source === wildcardType) return true;
+            if (t & TypeFlags.Inferred) return isTypeRelatedTo(source, getCurrentInferred(), relation);
+            if (s & TypeFlags.Inferred) return isTypeRelatedTo(getCurrentInferred(), target, relation);
+            if (t & TypeFlags.AnyOrUnknown || s & TypeFlags.Never || source === wildcardType) return true;
             if (t & TypeFlags.Never) return false;
             if (s & TypeFlags.StringLike && t & TypeFlags.String) return true;
             if (s & TypeFlags.StringLiteral && s & TypeFlags.EnumLiteral &&
@@ -14699,9 +14713,8 @@ namespace ts {
             if (s & TypeFlags.Null && (!strictNullChecks || t & TypeFlags.Null)) return true;
             if (s & TypeFlags.Object && t & TypeFlags.NonPrimitive) return true;
             if (relation === assignableRelation || relation === comparableRelation) {
-                // any and inferred are comparable and assignable to all
+                // any is comparable and assignable to all
                 if (s & TypeFlags.Any) return true;
-                if (s & TypeFlags.Inferred) return true;
                 // Type number or any numeric literal type is assignable to any numeric enum type or any
                 // numeric enum literal type. This rule exists for backwards compatibility reasons because
                 // bit-flag enum types sometimes look like literal enum types with numeric literal values.
@@ -27538,6 +27551,20 @@ namespace ts {
                         // Otherwise, the result is of type Any.
                         // NOTE: unknown type here denotes error type. Old compiler treated this case as any type so do we.
                         resultType = leftType === errorType || rightType === errorType ? errorType : anyType;
+                    }
+                    else if (isTypeInferred(leftType) && isTypeInferred(rightType)) {
+                        // TODO: check what left and right are actually narrowed to
+                        // previous usage may have restricted to less than number|string
+                        // also add resitriction that both left and right must have same type
+                        // we don't include bigint because its not valid json
+                        // TODO: return narrowed instance of inferred so that further restrictions can backpropogate
+                        resultType = getUnionType([numberType, stringType]);
+                    }
+                    else if (isTypeInferred(leftType)) {
+                        resultType = rightType;
+                    }
+                    else if (isTypeInferred(rightType)) {
+                        resultType = leftType;
                     }
 
                     // Symbols are not allowed at all in arithmetic expressions

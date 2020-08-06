@@ -1,0 +1,200 @@
+=== tests/cases/conformance/types/inferred/inferredType1.ts ===
+// type Json = number | string | boolean | null | Json[] | { [x: string]: Json }
+
+// In an intersection every type absorbs inferred
+type T00 = inferred & null;  // null
+>T00 : Symbol(T00, Decl(inferredType1.ts, 0, 0))
+
+type T01 = inferred & undefined;  // undefined
+>T01 : Symbol(T01, Decl(inferredType1.ts, 3, 27))
+
+type T02 = inferred & null & undefined;  // never
+>T02 : Symbol(T02, Decl(inferredType1.ts, 4, 32))
+
+type T03 = inferred & string;  // string
+>T03 : Symbol(T03, Decl(inferredType1.ts, 5, 39))
+
+type T04 = inferred & string[];  // string[]
+>T04 : Symbol(T04, Decl(inferredType1.ts, 6, 29))
+
+type T05 = inferred & unknown;  // unknown
+>T05 : Symbol(T05, Decl(inferredType1.ts, 7, 31))
+
+type T06 = inferred & any;  // any
+>T06 : Symbol(T06, Decl(inferredType1.ts, 8, 30))
+
+type T07 = inferred & inferred;  // inferred
+>T07 : Symbol(T07, Decl(inferredType1.ts, 9, 26))
+
+// inferred absorbs all json types in unions
+type T10 = inferred | null;  // inferred
+>T10 : Symbol(T10, Decl(inferredType1.ts, 10, 31))
+
+type T11 = inferred | undefined;  // inferred | undefined
+>T11 : Symbol(T11, Decl(inferredType1.ts, 13, 27))
+
+type T12 = inferred | null | undefined;  // inferred | undefined
+>T12 : Symbol(T12, Decl(inferredType1.ts, 14, 32))
+
+type T13 = inferred | string;  // inferred
+>T13 : Symbol(T13, Decl(inferredType1.ts, 15, 39))
+
+type T14 = inferred | string[];  // inferred
+>T14 : Symbol(T14, Decl(inferredType1.ts, 16, 29))
+
+type T15 = inferred | unknown;  // unknown
+>T15 : Symbol(T15, Decl(inferredType1.ts, 17, 31))
+
+type T16 = inferred | any;  // any
+>T16 : Symbol(T16, Decl(inferredType1.ts, 18, 30))
+
+type T17 = inferred | inferred;  // inferred
+>T17 : Symbol(T17, Decl(inferredType1.ts, 19, 26))
+
+// Any json type is assignable to inferred
+function f21(pAny: any, pNever: never) {
+>f21 : Symbol(f21, Decl(inferredType1.ts, 20, 31))
+>pAny : Symbol(pAny, Decl(inferredType1.ts, 23, 13))
+>pNever : Symbol(pNever, Decl(inferredType1.ts, 23, 23))
+
+    let x: inferred;
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+
+    x = 123;
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+
+    x = "hello";
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+
+    x = [1, 2, 3];
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+
+    x = x;
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+
+    x = pAny;
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+>pAny : Symbol(pAny, Decl(inferredType1.ts, 23, 13))
+
+    x = pNever;
+>x : Symbol(x, Decl(inferredType1.ts, 24, 7))
+>pNever : Symbol(pNever, Decl(inferredType1.ts, 23, 23))
+}
+
+// All operators except call are allowed with inferred
+function f10(x: inferred) {
+>f10 : Symbol(f10, Decl(inferredType1.ts, 31, 1))
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x == 5;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x !== 10;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x >= 0;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x.foo;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x[10];
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x();  // Error
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x + 1;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    x * 2;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    -x;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+
+    +x;
+>x : Symbol(x, Decl(inferredType1.ts, 34, 13))
+}
+
+// inferred assignable to all JSON types, itself, and top types like any, undefined
+function f22(x: inferred) {
+>f22 : Symbol(f22, Decl(inferredType1.ts, 45, 1))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v1: any = x;
+>v1 : Symbol(v1, Decl(inferredType1.ts, 49, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v2: unknown = x;
+>v2 : Symbol(v2, Decl(inferredType1.ts, 50, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v3: inferred = x
+>v3 : Symbol(v3, Decl(inferredType1.ts, 51, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v4: string = x;
+>v4 : Symbol(v4, Decl(inferredType1.ts, 53, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v5: number = x;
+>v5 : Symbol(v5, Decl(inferredType1.ts, 54, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v6: boolean = x;
+>v6 : Symbol(v6, Decl(inferredType1.ts, 55, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v7: null = x;
+>v7 : Symbol(v7, Decl(inferredType1.ts, 56, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v8: string[] = x;
+>v8 : Symbol(v8, Decl(inferredType1.ts, 57, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v9: object = x;
+>v9 : Symbol(v9, Decl(inferredType1.ts, 58, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v10: {} = x;
+>v10 : Symbol(v10, Decl(inferredType1.ts, 59, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v11: {} | null | undefined = x;  // Error
+>v11 : Symbol(v11, Decl(inferredType1.ts, 61, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v12: undefined = x;  // Error
+>v12 : Symbol(v12, Decl(inferredType1.ts, 62, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v13: Function = x;  // Error
+>v13 : Symbol(v13, Decl(inferredType1.ts, 63, 7))
+>Function : Symbol(Function, Decl(lib.es5.d.ts, --, --), Decl(lib.es5.d.ts, --, --))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v14: (() => void) = x;  // Error
+>v14 : Symbol(v14, Decl(inferredType1.ts, 64, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+
+    let v15: Error = x;  // Error
+>v15 : Symbol(v15, Decl(inferredType1.ts, 65, 7))
+>Error : Symbol(Error, Decl(lib.es5.d.ts, --, --), Decl(lib.es5.d.ts, --, --))
+>x : Symbol(x, Decl(inferredType1.ts, 48, 13))
+}
+
+// Locals of type inferred are not considered initialized
+function f25() {
+>f25 : Symbol(f25, Decl(inferredType1.ts, 66, 1))
+
+    let x: inferred;
+>x : Symbol(x, Decl(inferredType1.ts, 70, 7))
+
+    let y = x;
+>y : Symbol(y, Decl(inferredType1.ts, 71, 7))
+>x : Symbol(x, Decl(inferredType1.ts, 70, 7))
+}
+

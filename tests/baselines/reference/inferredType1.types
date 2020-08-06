@@ -1,0 +1,233 @@
+=== tests/cases/conformance/types/inferred/inferredType1.ts ===
+// type Json = number | string | boolean | null | Json[] | { [x: string]: Json }
+
+// In an intersection every type absorbs inferred
+type T00 = inferred & null;  // null
+>T00 : any
+>null : null
+
+type T01 = inferred & undefined;  // undefined
+>T01 : any
+
+type T02 = inferred & null & undefined;  // never
+>T02 : never
+>null : null
+
+type T03 = inferred & string;  // string
+>T03 : any
+
+type T04 = inferred & string[];  // string[]
+>T04 : any
+
+type T05 = inferred & unknown;  // unknown
+>T05 : any
+
+type T06 = inferred & any;  // any
+>T06 : any
+
+type T07 = inferred & inferred;  // inferred
+>T07 : any
+
+// inferred absorbs all json types in unions
+type T10 = inferred | null;  // inferred
+>T10 : any
+>null : null
+
+type T11 = inferred | undefined;  // inferred | undefined
+>T11 : any
+
+type T12 = inferred | null | undefined;  // inferred | undefined
+>T12 : any
+>null : null
+
+type T13 = inferred | string;  // inferred
+>T13 : any
+
+type T14 = inferred | string[];  // inferred
+>T14 : any
+
+type T15 = inferred | unknown;  // unknown
+>T15 : any
+
+type T16 = inferred | any;  // any
+>T16 : any
+
+type T17 = inferred | inferred;  // inferred
+>T17 : any
+
+// Any json type is assignable to inferred
+function f21(pAny: any, pNever: never) {
+>f21 : (pAny: any, pNever: never) => void
+>pAny : any
+>pNever : never
+
+    let x: inferred;
+>x : error
+
+    x = 123;
+>x = 123 : 123
+>x : error
+>123 : 123
+
+    x = "hello";
+>x = "hello" : "hello"
+>x : error
+>"hello" : "hello"
+
+    x = [1, 2, 3];
+>x = [1, 2, 3] : number[]
+>x : error
+>[1, 2, 3] : number[]
+>1 : 1
+>2 : 2
+>3 : 3
+
+    x = x;
+>x = x : error
+>x : error
+>x : error
+
+    x = pAny;
+>x = pAny : any
+>x : error
+>pAny : any
+
+    x = pNever;
+>x = pNever : never
+>x : error
+>pNever : never
+}
+
+// All operators except call are allowed with inferred
+function f10(x: inferred) {
+>f10 : (x: any) => void
+>x : error
+
+    x == 5;
+>x == 5 : boolean
+>x : error
+>5 : 5
+
+    x !== 10;
+>x !== 10 : boolean
+>x : error
+>10 : 10
+
+    x >= 0;
+>x >= 0 : boolean
+>x : error
+>0 : 0
+
+    x.foo;
+>x.foo : error
+>x : any
+>foo : any
+
+    x[10];
+>x[10] : error
+>x : error
+>10 : 10
+
+    x();  // Error
+>x() : error
+>x : error
+
+    x + 1;
+>x + 1 : error
+>x : error
+>1 : 1
+
+    x * 2;
+>x * 2 : number
+>x : error
+>2 : 2
+
+    -x;
+>-x : number
+>x : error
+
+    +x;
+>+x : number
+>x : error
+}
+
+// inferred assignable to all JSON types, itself, and top types like any, undefined
+function f22(x: inferred) {
+>f22 : (x: any) => void
+>x : error
+
+    let v1: any = x;
+>v1 : any
+>x : error
+
+    let v2: unknown = x;
+>v2 : unknown
+>x : error
+
+    let v3: inferred = x
+>v3 : error
+>x : error
+
+    let v4: string = x;
+>v4 : string
+>x : error
+
+    let v5: number = x;
+>v5 : number
+>x : error
+
+    let v6: boolean = x;
+>v6 : boolean
+>x : error
+
+    let v7: null = x;
+>v7 : null
+>null : null
+>x : error
+
+    let v8: string[] = x;
+>v8 : string[]
+>x : error
+
+    let v9: object = x;
+>v9 : object
+>x : error
+
+    let v10: {} = x;
+>v10 : {}
+>x : error
+
+    let v11: {} | null | undefined = x;  // Error
+>v11 : {} | null | undefined
+>null : null
+>x : error
+
+    let v12: undefined = x;  // Error
+>v12 : undefined
+>x : error
+
+    let v13: Function = x;  // Error
+>v13 : Function
+>x : error
+
+    let v14: (() => void) = x;  // Error
+>v14 : () => void
+>x : error
+
+    let v15: Error = x;  // Error
+>v15 : Error
+>x : error
+}
+
+// Locals of type inferred are not considered initialized
+function f25() {
+>f25 : () => void
+
+    let x: inferred;
+>x : error
+
+    let y = x;
+>y : error
+>x : error
+}
+

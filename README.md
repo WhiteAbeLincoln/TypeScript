@@ -139,6 +139,9 @@ of an intersection from type array
 + `checkAndAggregateReturnExpressionTypes` :: helper fn that actually infers the return types from return statements in function body
 + `getSubstitutionType` :: gets the substitution type for a conditionditional type
 + `getConditionalType` :: gets the conditional type
++ `getTypeOfSymbol` :: gets the type of a symbol
++ `checkSourceElement` :: checks each line of a source file, good for seeing all of the checker functions
++ `checkSourceFile` :: typechecks a source file
 ### Things to look for in `checker.ts`
 + `TypeFlags.Any`
 + `anyType`
