@@ -646,6 +646,7 @@ namespace ts {
             return res;
         }
 
+        // const _inferredTypes = createMap<{}>();
         const tupleTypes = createMap<GenericType>();
         const unionTypes = createMap<UnionType>();
         const intersectionTypes = createMap<Type>();
@@ -659,7 +660,6 @@ namespace ts {
         const resolvingSymbol = createSymbol(0, InternalSymbolName.Resolving);
 
         const anyType = createIntrinsicType(TypeFlags.Any, "any");
-        const inferredQueryType = createIntrinsicType(TypeFlags.Inferred, "inferred");
         const autoType = createIntrinsicType(TypeFlags.Any, "any");
         const wildcardType = createIntrinsicType(TypeFlags.Any, "any");
         const errorType = createIntrinsicType(TypeFlags.Any, "error");
@@ -702,7 +702,6 @@ namespace ts {
         const stringNumberSymbolType = getUnionType([stringType, numberType, esSymbolType]);
         const keyofConstraintType = keyofStringsOnly ? stringType : stringNumberSymbolType;
         const numberOrBigIntType = getUnionType([numberType, bigintType]);
-        const jsonPrimitiveType = getUnionType([stringType, numberType, booleanType, nullType]);
 
         const emptyObjectType = createAnonymousType(undefined, emptySymbols, emptyArray, emptyArray, undefined, undefined);
         const emptyJsxObjectType = createAnonymousType(undefined, emptySymbols, emptyArray, emptyArray, undefined, undefined);
@@ -4043,9 +4042,17 @@ namespace ts {
                 if (type.flags & TypeFlags.Unknown) {
                     return createKeywordTypeNode(SyntaxKind.UnknownKeyword);
                 }
-                if (type.flags & TypeFlags.Inferred) {
-                    context.approximateLength += 8;
-                    return createKeywordTypeNode(SyntaxKind.InferredKeyword);
+                if (isTypeInferredQuery(type)) {
+                    // TODO(inferred): fix this to use contextual. refer to union
+                    // and intersection on how to build a description of the type
+
+                    // TODO(inferred): figure out why type doesn't print correctly
+                    // when introduced as a parameter to a function
+                    if (isFreshInferredQuery(type)) {
+                        context.approximateLength += 8;
+                        return createKeywordTypeNode(SyntaxKind.InferredKeyword);
+                    }
+                    type = getInferredQueryInference(type, true);
                 }
                 if (type.flags & TypeFlags.String) {
                     context.approximateLength += 6;
@@ -4538,6 +4545,7 @@ namespace ts {
              * defaults to any if truncation is disabled
              */
             function createElidedInformationPlaceholder(context: NodeBuilderContext) {
+                context.approximateLength += 3;
                 if (!(context.flags & NodeBuilderFlags.NoTruncation)) {
                     return createTypeReferenceNode(createIdentifier("..."), /*typeArguments*/ undefined);
                 }
@@ -6984,8 +6992,8 @@ namespace ts {
             return type && (type.flags & TypeFlags.Any) !== 0;
         }
 
-        function isTypeInferred(type: Type | undefined) {
-            return type && (type.flags & TypeFlags.Inferred) !== 0;
+        function isTypeInferredQuery(type: Type | undefined): type is InferredQueryType {
+            return !!(type && (type.flags & TypeFlags.Inferred) !== 0);
         }
 
         // Return the type of a binding element parent. We check SymbolLinks first to see if a type has been
@@ -7102,7 +7110,8 @@ namespace ts {
             const pattern = declaration.parent;
             let parentType = getTypeForBindingElementParent(pattern.parent);
             // If no type or an any type was inferred for parent, infer that for the binding element
-            if (!parentType || isTypeAny(parentType) || isTypeInferred(parentType)) {
+            // TODO(inferred): figure out how inferred type behaves here
+            if (!parentType || isTypeAny(parentType) || isTypeInferredQuery(parentType)) {
                 return parentType;
             }
             // Relax null check on ambient destructuring parameters, since the parameters have no implementation and are just documentation
@@ -10273,7 +10282,8 @@ namespace ts {
             }
             if (type.flags & TypeFlags.Inferred) {
                 const s = createSymbol(SymbolFlags.Property, name);
-                s.type = inferredQueryType;
+                // TODO(inferred): restrict parent type
+                s.type = createInferredQueryType();
                 return s;
             }
             return undefined;
@@ -11828,8 +11838,10 @@ namespace ts {
                     return includes & TypeFlags.Any ? includes & TypeFlags.IncludesWildcard ? wildcardType : anyType : unknownType;
                 }
                 // has same behavior as AnyOrUnknown above, but for Inferred
+                // TODO(inferred): Use the UnionReduction.Subtype to remove all types that are subtypes of inferred
+                // meaning any json compatible type, leaving functions, constructibles/classes, undefined
                 if (includes & TypeFlags.Inferred) {
-                    return includes & TypeFlags.IncludesWildcard ? wildcardType : inferredQueryType;
+                    return includes & TypeFlags.IncludesWildcard ? wildcardType : createInferredQueryType();
                 }
                 switch (unionReduction) {
                     case UnionReduction.Literal:
@@ -11935,6 +11947,8 @@ namespace ts {
             else {
                 // unknown, any, and inferred are all absorbed in an intersection
                 // do nothing unless the type is a wildcard (i.e. an index)
+                // TODO(inferred): constrain the inferred type based on the rest of the intersection
+                // and the previous constraints. Errors should cause intersection to be of type never
                 if (flags & (TypeFlags.AnyOrUnknown | TypeFlags.Inferred)) {
                     if (type === wildcardType) includes |= TypeFlags.IncludesWildcard;
                 }
@@ -12095,8 +12109,9 @@ namespace ts {
             if (includes & TypeFlags.Any) {
                 return includes & TypeFlags.IncludesWildcard ? wildcardType : anyType;
             }
+            // TODO(inferred): Align this with other intersection type behavior, rather than any
             if (includes & TypeFlags.Inferred) {
-                return includes & TypeFlags.IncludesWildcard ? wildcardType : inferredQueryType;
+                return includes & TypeFlags.IncludesWildcard ? wildcardType : createInferredQueryType();
             }
             if (!strictNullChecks && includes & TypeFlags.Nullable) {
                 return includes & TypeFlags.Undefined ? undefinedType : nullType;
@@ -12994,7 +13009,8 @@ namespace ts {
                 return anyType;
             }
             if (left.flags & TypeFlags.Inferred || right.flags & TypeFlags.Inferred) {
-                return inferredQueryType;
+                // TODO(inferred): if one of left or right is not inferred, add their properties to the resulting type
+                return createInferredQueryType();
             }
             if (left.flags & TypeFlags.Unknown || right.flags & TypeFlags.Unknown) {
                 return unknownType;
@@ -13179,6 +13195,80 @@ namespace ts {
             return links.resolvedType;
         }
 
+        function createInferredQueryType(restrictions: Type[] = []): InferredQueryType {
+            const type = createType(TypeFlags.Inferred) as InferredQueryType;
+            type.restrictions = restrictions;
+            type.alternates = [];
+            type.childTypes = [];
+            type.actions = [];
+            type.freshInferred = true;
+            return type;
+        }
+
+        /** mutates arr */
+        function pushUnique<T>(arr: T[], added: T[]): T[] {
+            added = added.filter(a => !arr.includes(a));
+            arr.push(...added);
+            return arr;
+        }
+
+        function addInferredQueryRestriction(type: Type | undefined, ...restrictions: Type[]) {
+            if (isTypeInferredQuery(type)) {
+                type.freshInferred = false;
+                pushUnique(type.restrictions, restrictions);
+                getInferredQueryInference(type, true);
+            }
+        }
+
+        function addInferredQueryAlternate(type: Type | undefined, ...alternates: Type[]) {
+            if (isTypeInferredQuery(type)) {
+                type.freshInferred = false;
+                pushUnique(type.alternates, alternates);
+                getInferredQueryInference(type, true);
+            }
+        }
+
+        function addInferredQueryAction(type: Type | undefined, ...actions: InferredQueryAction[]) {
+            if (isTypeInferredQuery(type)) {
+                pushUnique(type.actions, actions);
+                type.freshInferred = false;
+                // should not reset the inferred type
+            }
+        }
+
+        function getInferredQueryInference(type: InferredQueryType, skipCache?: boolean): Type {
+            if (!type.inferredType || skipCache) {
+                const types: Type[] = [];
+                if (type.restrictions.length) {
+                  types.push(getIntersectionType(type.restrictions));
+                }
+                if (type.alternates.length) {
+                  types.push(getUnionType(type.alternates));
+                }
+                const inferredT = getIntersectionType(types);
+                type.inferredType = inferredT;
+
+                // execute actions since inferred type changed
+                // actions should be idempotent
+                const actions = type.actions.filter(a => a.when(type, inferredT));
+                actions.forEach(a => a.action(type));
+                type.actions = type.actions.filter(a => !actions.includes(a));
+            }
+            return type.inferredType;
+        }
+
+        function isFreshInferredQuery(type: InferredQueryType): boolean {
+            return type.freshInferred && type.actions.length === 0 && type.restrictions.length === 0 && type.alternates.length === 0;
+        }
+
+        function getTypeFromInferredQueryTypeNode(node: TypeNode): InferredQueryType {
+            const links = getNodeLinks(node);
+            if (!links.resolvedType) {
+                links.resolvedType = createInferredQueryType();
+            }
+            return links.resolvedType as InferredQueryType;
+        }
+
         function createUniqueESSymbolType(symbol: Symbol) {
             const type = <UniqueESSymbolType>createType(TypeFlags.UniqueESSymbol);
             type.symbol = symbol;
@@ -13238,7 +13328,7 @@ namespace ts {
                 case SyntaxKind.JSDocUnknownType:
                     return anyType;
                 case SyntaxKind.InferredKeyword:
-                    return inferredQueryType;
+                    return getTypeFromInferredQueryTypeNode(node);
                 case SyntaxKind.UnknownKeyword:
                     return unknownType;
                 case SyntaxKind.StringKeyword:
@@ -14680,15 +14770,32 @@ namespace ts {
             return true;
         }
 
-        function getCurrentInferred() {
-          return jsonPrimitiveType;
+        // TODO(inferred): this function should take into account the constraints on the inferred type instance
+        function isInferredQueryTypeRelatedTo(inf: InferredQueryType, other: Type, infRole: "source" | "target", relation: Map<RelationComparisonResult>) {
+            const o = other.flags;
+
+            // first exclude non-json compatible types
+            // Function types should never be structurally assignable. We want the type to equal the possible runtime value if we do
+            // JSON.parse(JSON.stringify(x)). if x is function type then stringify only returns undefined, even if x has non callable properties
+            if (o & (TypeFlags.Undefined | TypeFlags.BigIntLike | TypeFlags.EnumLike | TypeFlags.ESSymbolLike) || isTypeDerivedFrom(other, globalFunctionType)) {
+                return false;
+            }
+
+            // our inferred query type hasn't been used yet
+            // so has no restrictions. In this case it is equal to JSON = string|number|boolean|null | JSON[] | { [x: string]: JSON }
+            if (isFreshInferredQuery(inf)) {
+                return true;
+            }
+            const inferred = getInferredQueryInference(inf);
+            const [source, target] = infRole === "source" ? [inferred, other] : [other, inferred];
+            return isTypeRelatedTo(source, target, relation);
         }
 
         function isSimpleTypeRelatedTo(source: Type, target: Type, relation: Map<RelationComparisonResult>, errorReporter?: ErrorReporter) {
             const s = source.flags;
             const t = target.flags;
-            if (t & TypeFlags.Inferred) return isTypeRelatedTo(source, getCurrentInferred(), relation);
-            if (s & TypeFlags.Inferred) return isTypeRelatedTo(getCurrentInferred(), target, relation);
+            if (t & TypeFlags.Inferred) return isInferredQueryTypeRelatedTo(target as InferredQueryType, source, "target", relation);
+            if (s & TypeFlags.Inferred) return isInferredQueryTypeRelatedTo(source as InferredQueryType, target, "source", relation);
             if (t & TypeFlags.AnyOrUnknown || s & TypeFlags.Never || source === wildcardType) return true;
             if (t & TypeFlags.Never) return false;
             if (s & TypeFlags.StringLike && t & TypeFlags.String) return true;
@@ -23308,6 +23415,7 @@ namespace ts {
                 checkPropertyAccessExpressionOrQualifiedName(node, node.expression, checkNonNullExpression(node.expression), node.name);
         }
 
+        // TODO(inferred): Propogate null when inferred is in a chain
         function checkPropertyAccessChain(node: PropertyAccessChain) {
             const leftType = checkExpression(node.expression);
             const nonOptionalType = getOptionalExpressionType(leftType, node.expression);
@@ -25946,6 +26054,12 @@ namespace ts {
                         Diagnostics.Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the_other_If_this_was_intentional_convert_the_expression_to_unknown_first);
                 }
             }
+            if (isTypeInferredQuery(exprType)) {
+                // assertion on inferred query should also reduce the expression
+                // TODO(inferred): this isn't consistent with normal usage of assertions in typescript
+                // would it be better to not do anything?
+                addInferredQueryRestriction(exprType, targetType);
+            }
             return targetType;
         }
 
@@ -26718,12 +26832,14 @@ namespace ts {
             }
         }
 
+        function isValidArithmeticOperandType(t: Type) { return isTypeInferredQuery(t) || isTypeAssignableTo(t, numberOrBigIntType); }
         function checkArithmeticOperandType(operand: Node, type: Type, diagnostic: DiagnosticMessage, isAwaitValid = false): boolean {
-            if (!isTypeAssignableTo(type, numberOrBigIntType)) {
+            // every callsite later checks if inferred type is valid
+            if (!isValidArithmeticOperandType(type)) {
                 const awaitedType = isAwaitValid && getAwaitedTypeOfPromise(type);
                 errorAndMaybeSuggestAwait(
                     operand,
-                    !!awaitedType && isTypeAssignableTo(awaitedType, numberOrBigIntType),
+                    !!awaitedType && isValidArithmeticOperandType(awaitedType),
                     diagnostic);
                 return false;
             }
@@ -27001,10 +27117,12 @@ namespace ts {
 
         function getUnaryResultType(operandType: Type): Type {
             if (maybeTypeOfKind(operandType, TypeFlags.BigIntLike)) {
-                return isTypeAssignableToKind(operandType, TypeFlags.AnyOrUnknown | TypeFlags.Inferred) || maybeTypeOfKind(operandType, TypeFlags.NumberLike)
+                return isTypeAssignableToKind(operandType, TypeFlags.AnyOrUnknown) || maybeTypeOfKind(operandType, TypeFlags.NumberLike)
                     ? numberOrBigIntType
                     : bigintType;
             }
+            // add a restriction to the type if it is inferred
+            addInferredQueryRestriction(operandType, numberType);
             // If it's not a bigint type, implicit coercion will result in a number
             return numberType;
         }
@@ -27092,8 +27210,14 @@ namespace ts {
             if (!(isTypeComparableTo(leftType, stringType) || isTypeAssignableToKind(leftType, TypeFlags.NumberLike | TypeFlags.ESSymbolLike))) {
                 error(left, Diagnostics.The_left_hand_side_of_an_in_expression_must_be_of_type_any_string_number_or_symbol);
             }
+            if (isTypeInferredQuery(leftType)) {
+                addInferredQueryAlternate(leftType, stringType, numberType);
+            }
             if (!allTypesAssignableToKind(rightType, TypeFlags.NonPrimitive | TypeFlags.InstantiableNonPrimitive)) {
                 error(right, Diagnostics.The_right_hand_side_of_an_in_expression_must_be_of_type_any_an_object_type_or_a_type_parameter);
+            }
+            if (isTypeInferredQuery(rightType)) {
+                addInferredQueryRestriction(rightType, nonPrimitiveType);
             }
             return booleanType;
         }
@@ -27496,8 +27620,15 @@ namespace ts {
                         const leftOk = checkArithmeticOperandType(left, leftType, Diagnostics.The_left_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
                         const rightOk = checkArithmeticOperandType(right, rightType, Diagnostics.The_right_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
                         let resultType: Type;
+                        if (isTypeInferredQuery(leftType) || isTypeInferredQuery(rightType)) {
+                            addInferredQueryRestriction(leftType, numberType);
+                            addInferredQueryRestriction(rightType, numberType);
+                            // TODO(inferred): write a checkAddRestriction / checkAddAlternative that tests whether the result would be valid
+                            // and errors with a diagnostic otherwise
+                            resultType = numberType;
+                        }
                         // If both are any or unknown, allow operation; assume it will resolve to number
-                        if ((isTypeAssignableToKind(leftType, TypeFlags.AnyOrUnknown | TypeFlags.Inferred) && isTypeAssignableToKind(rightType, TypeFlags.AnyOrUnknown | TypeFlags.Inferred)) ||
+                        else if ((isTypeAssignableToKind(leftType, TypeFlags.AnyOrUnknown) && isTypeAssignableToKind(rightType, TypeFlags.AnyOrUnknown)) ||
                             // Or, if neither could be bigint, implicit coercion results in a number result
                             !(maybeTypeOfKind(leftType, TypeFlags.BigIntLike) || maybeTypeOfKind(rightType, TypeFlags.BigIntLike))
                         ) {
@@ -27545,6 +27676,9 @@ namespace ts {
                     }
                     else if (isTypeAssignableToKind(leftType, TypeFlags.StringLike, /*strict*/ true) || isTypeAssignableToKind(rightType, TypeFlags.StringLike, /*strict*/ true)) {
                         // If one or both operands are of the String primitive type, the result is of the String primitive type.
+
+                        // if one of the types is an inferred query, we don't restrict, since adding a string to any json type
+                        // just coerces it to a string, therefore all types are valid
                         resultType = stringType;
                     }
                     else if (isTypeAny(leftType) || isTypeAny(rightType)) {
@@ -27552,19 +27686,79 @@ namespace ts {
                         // NOTE: unknown type here denotes error type. Old compiler treated this case as any type so do we.
                         resultType = leftType === errorType || rightType === errorType ? errorType : anyType;
                     }
-                    else if (isTypeInferred(leftType) && isTypeInferred(rightType)) {
-                        // TODO: check what left and right are actually narrowed to
+                    else if (isTypeInferredQuery(leftType) || isTypeInferredQuery(rightType)) {
+                        // left and right can be inferred or NumberLike
+
+                        // TODO(inferred): check what left and right are actually narrowed to
                         // previous usage may have restricted to less than number|string
-                        // also add resitriction that both left and right must have same type
-                        // we don't include bigint because its not valid json
-                        // TODO: return narrowed instance of inferred so that further restrictions can backpropogate
-                        resultType = getUnionType([numberType, stringType]);
-                    }
-                    else if (isTypeInferred(leftType)) {
-                        resultType = rightType;
-                    }
-                    else if (isTypeInferred(rightType)) {
-                        resultType = leftType;
+                        // TODO(inferred): return narrowed instance of inferred so that further restrictions can backpropogate
+
+                        // Type coercion in javascript for addition:
+                        // if one of the types is a string, the result is a string
+                        // otherwise the result is a number
+
+                        // Possibilities for left and right
+                        // | left                    | right                   | result type             |
+                        // +-------------------------+-------------------------+-------------------------|
+                        // | number                  | inferred(number)        | number                  |
+                        // | number                  | inferred(string)        | string                  |
+                        // | number                  | inferred(string|number) | inferred(string|number) |
+                        // | inferred(number)        | number                  | number                  |
+                        // | inferred(number)        | inferred(number)        | number                  |
+                        // | inferred(number)        | inferred(string)        | string                  |
+                        // | inferred(number)        | inferred(string|number) | inferred(string|number) |
+                        // | inferred(string)        | number                  | string                  |
+                        // | inferred(string)        | inferred(number)        | string                  |
+                        // | inferred(string)        | inferred(string)        | string                  |
+                        // | inferred(string)        | inferred(string|number) | string                  |
+                        // | inferred(string|number) | number                  | inferred(string|number) |
+                        // | inferred(string|number) | inferred(number)        | inferred(string|number) |
+                        // | inferred(string|number) | inferred(string)        | string                  |
+                        // | inferred(string|number) | inferred(string|number) | inferred(string|number) |
+
+                        // Rules are:
+                        // if left or right is just string, result is string
+                        // if left or right is string|number, result is string|number
+                        // otherwise result is number
+
+                        // if one of left and right are restricted to string|num and result is string|num
+                        // if result later is proved to be num left or right must have been numbers
+                        const mkToNumAction = (t1?: Type, t2?: Type): InferredQueryAction | undefined => (t1 || t2) ? ({
+                            // TODO(inferred): Rely on type checking functions on inferred, rather than inspecting r
+                            // r has type number when there are no alternates and number is the only restriction
+                            when: (_, inf) => {
+                                return isTypeAssignableTo(inf, numberType);
+                            },
+                            // we add the number restriction to left and right
+                            action: () => {
+                                addInferredQueryRestriction(t1, numberType);
+                                addInferredQueryRestriction(t2, numberType);
+                            }
+                        }) : undefined;
+
+                        const isExactStringType = (t: Type) => isTypeAssignableTo(t, stringType) && !isTypeAssignableTo(t, numberType);
+                        const isUnionType = (t: Type) => isTypeInferredQuery(t) && isTypeAssignableTo(t, stringType) && isTypeAssignableTo(t, numberType);
+
+                        const resultIsString = isExactStringType(leftType) || isExactStringType(rightType);
+                        const leftUnion = isUnionType(leftType) ? leftType : undefined;
+                        const rightUnion = isUnionType(rightType) ? rightType : undefined;
+
+                        if (resultIsString) {
+                            resultType = stringType;
+                        }
+                        else if (leftUnion || rightUnion) {
+                            resultType = createInferredQueryType();
+                            addInferredQueryAlternate(resultType, stringType, numberType);
+                            addInferredQueryAlternate(leftUnion, stringType, numberType);
+                            addInferredQueryAlternate(rightUnion, stringType, numberType);
+                            const action = mkToNumAction(leftUnion, rightUnion);
+                            if (action) {
+                                addInferredQueryAction(resultType, action);
+                            }
+                        }
+                        else {
+                            resultType = numberType;
+                        }
                     }
 
                     // Symbols are not allowed at all in arithmetic expressions
@@ -27595,9 +27789,19 @@ namespace ts {
                     if (checkForDisallowedESSymbolOperand(operator)) {
                         leftType = getBaseTypeOfLiteralType(checkNonNullType(leftType, left));
                         rightType = getBaseTypeOfLiteralType(checkNonNullType(rightType, right));
-                        reportOperatorErrorUnless((left, right) =>
+                        const err = reportOperatorErrorUnless((left, right) =>
                             isTypeComparableTo(left, right) || isTypeComparableTo(right, left) || (
                                 isTypeAssignableTo(left, numberOrBigIntType) && isTypeAssignableTo(right, numberOrBigIntType)));
+                        if (!err) {
+                            if (isTypeInferredQuery(leftType) && isTypeInferredQuery(rightType)) {
+                                // TODO(inferred): What do we do when both are inferred?
+                            }
+                            else if (isTypeInferredQuery(leftType) || isTypeInferredQuery(rightType)) {
+                                // Add restriction on the inferred type to the type of the other
+                                addInferredQueryRestriction(leftType, rightType);
+                                addInferredQueryRestriction(rightType, leftType);
+                            }
+                        }
                     }
                     return booleanType;
                 case SyntaxKind.EqualsEqualsToken:
@@ -27611,6 +27815,7 @@ namespace ts {
                     return checkInstanceOfExpression(left, right, leftType, rightType);
                 case SyntaxKind.InKeyword:
                     return checkInExpression(left, right, leftType, rightType);
+                // TODO(inferred): handle expressions that change the type like && || ??
                 case SyntaxKind.AmpersandAmpersandToken:
                     return getTypeFacts(leftType) & TypeFacts.Truthy ?
                         getUnionType([extractDefinitelyFalsyTypes(strictNullChecks ? leftType : getBaseTypeOfLiteralType(rightType)), rightType]) :
@@ -31243,6 +31448,7 @@ namespace ts {
             return checkIteratedTypeOrElementType(use, expressionType, undefinedType, rhsExpression);
         }
 
+        // TODO(inferred): Decide what to do when iterating over an inferred
         function checkIteratedTypeOrElementType(use: IterationUse, inputType: Type, sentType: Type, errorNode: Node | undefined): Type {
             if (isTypeAny(inputType)) {
                 return inputType;
@@ -31944,6 +32150,7 @@ namespace ts {
             return !!unwrappedReturnType && maybeTypeOfKind(unwrappedReturnType, TypeFlags.Void | TypeFlags.AnyOrUnknown | TypeFlags.Inferred);
         }
 
+        // TODO(inferred): decide what to do with inferred at function boundaries
         function checkReturnStatement(node: ReturnStatement) {
             // Grammar checking
             if (checkGrammarStatementInAmbientContext(node)) {
@@ -33476,6 +33683,7 @@ namespace ts {
                     error(exportedName, Diagnostics.Cannot_export_0_Only_local_declarations_can_be_exported_from_a_module, idText(exportedName));
                 }
                 else {
+                    // TODO(inferred): disallow exporting variables with inferred type
                     markExportAsReferenced(node);
                     const target = symbol && (symbol.flags & SymbolFlags.Alias ? resolveAlias(symbol) : symbol);
                     if (!target || target === unknownSymbol || target.flags & SymbolFlags.Value) {

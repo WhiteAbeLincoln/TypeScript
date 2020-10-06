@@ -4574,6 +4574,34 @@ namespace ts {
         resolvedApparentType: Type;
     }
 
+    type InferredQueryRelation = { kind: "operator", value: InferredQueryType }
+                               | { kind: "property", value: InferredQueryType, symbol: Symbol }
+                               ;
+
+    /** An action taken when the inferred type of an InferredQueryType changes. */
+    export interface InferredQueryAction {
+        when: (t: InferredQueryType, inferred: Type) => boolean;
+        /** should be idempotent, since we may accidentially call action multiple times */
+        action: (t: InferredQueryType) => void;
+    }
+    /**
+     * The inferred query type is essentially all subtypes of the union
+     * ```ts
+     * type JSON = string | boolean | number | null | JSON[] | { [x: string]: JSON  }
+     * ```
+     */
+    export interface InferredQueryType extends Type {
+        actions: InferredQueryAction[];
+        freshInferred: boolean;
+        childTypes: InferredQueryRelation[];
+        // narrows the type by adding to an intersection
+        restrictions: Type[];
+        // widens the type by adding to a union
+        alternates: Type[];
+        // the intersection of restrictions and alternates
+        inferredType?: Type;
+    }
+
     export type StructuredType = ObjectType | UnionType | IntersectionType;
 
     /* @internal */

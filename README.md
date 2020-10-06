@@ -82,7 +82,8 @@ other restrictions on `res` to make `α :> { bar: number, foo: Array<number>, ba
 At the end of typechecking, we should have a fully constructed minimum bound type for
 `α`, which was introduced by our query call. We write that type to a file as part of
 compiling, and send it along with the query at runtime, so that the database knows
-what the minimum type bound is and can send back data fitting the proper shape.
+what the minimum type bound is and can send back data fitting the proper shape. Which variable to emit and unique names would be determined by functions that return a pure `Q` type, variables that are declared with a `Q` type, etc. Since every usage of `Q` must begin somewhere, and any usage of `Q` will start restricting the type, an unused
+`Q` introduced by a keyword can be considered the beginning.
 
 This does break one of TypeScript's core rules, which is `no type-directed emit`,
 so there is no chance that this gets merged into master. However, it is conceivable
