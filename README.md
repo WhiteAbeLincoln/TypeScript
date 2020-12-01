@@ -41,11 +41,18 @@ First we see that the `foo` property is accessed, so we know
 Next the `map` method is called so we know
 `δ <: Q, γ :> Array<δ>`, and `x: δ` in the lambda function. An array is the only option
 because we know that `Q` must be a valid JSON type and so must not contain arbitrary
-functions.  
+functions [^1]. 
+
+[^1]: TODO: Currently we require an assertion such as `(res.foo as inferred[]).map(...)`
+for the map call to be valid. We could have a lookup for the set of properties on String, Number,
+Boolean, Array, Object, and check which property matches, but that only works if we know that the
+property we are using is not an object with arbitrary properties. How could we tell the difference
+between `(any[]).map.bind` and `(object).map.bind`?
+
 Finally, `δ` is constrained by `add`, so we know `δ :> number, γ :> Array<number>`
 and consequently `α :> { bar: number, foo: Array<number> }`
 ```typescript
-declare const fn1(x: string)
+declare const fn1(x: number)
 declare const fn2(x: string)
 
 fn1(res.baz)
@@ -56,8 +63,10 @@ We know at first that `ε <: Q, α :> { bar: number, foo: Array<number>, baz: ε
 By passing `ε` into a function taking type `number`, we restrict `ε` to at least `number`, or `ε :> number`.  
 However, on the next line we pass `ε` into a function taking a `string`.  
 This means that `ε` must be restricted to some more general type which
-is the supertype of both `string` and `number`, so `ε :> string & number`.  
-Finally, `α :> { bar: number, foo: Array<number>, baz: string & number }`.
+is the supertype of both `string` and `number`, so `ε :> string & number`.
+Since `string` and `number` are different domains, their intersection is
+empty, so the given type of `ε` is `never`, the bottom type in TypeScript.
+Therefore, `α :> { bar: number, foo: Array<number>, baz: never }`.
 ```typescript
 if (typeof res.qux === 'string') {
     // do something with res.qux
