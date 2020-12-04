@@ -1,3 +1,7 @@
+.direnv
+shell.nix
+.envrc
+
 node_modules/
 .node_modules/
 built/*

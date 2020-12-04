@@ -381,6 +381,7 @@ namespace ts {
                 case SyntaxKind.TypePredicate:
                 case SyntaxKind.TypeParameter:
                 case SyntaxKind.AnyKeyword:
+                case SyntaxKind.InferredKeyword:
                 case SyntaxKind.UnknownKeyword:
                 case SyntaxKind.BooleanKeyword:
                 case SyntaxKind.StringKeyword:
@@ -1584,6 +1585,7 @@ namespace ts {
                 case SyntaxKind.MappedType:
                 case SyntaxKind.TypeLiteral:
                 case SyntaxKind.AnyKeyword:
+                case SyntaxKind.InferredKeyword:
                 case SyntaxKind.UnknownKeyword:
                 case SyntaxKind.ThisType:
                 case SyntaxKind.ImportType:

@@ -1534,6 +1534,21 @@ type Uncapitalize<S extends string> = intrinsic;
 interface ThisType<T> { }
 
 /**
+ * Represents valid JSON values
+ */
+type JsonType = string | number | boolean | null | JsonType[] | { [x: string]: JsonType };
+
+/**
+ * Marks an inferred type as being fresh
+ */
+type FreshInferred<S extends inferred> = intrinsic;
+
+/**
+ * Marks an inferred type as being exported
+ */
+type ExportedInferred<S extends inferred, File extends string> = intrinsic;
+
+/**
  * Represents a raw buffer of binary data, which is used to store data for the
  * different typed arrays. ArrayBuffers cannot be read from or written to directly,
  * but can be passed to a typed array or DataView Object to interpret the raw

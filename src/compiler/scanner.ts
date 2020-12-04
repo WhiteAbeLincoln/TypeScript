@@ -109,6 +109,7 @@ namespace ts {
         import: SyntaxKind.ImportKeyword,
         in: SyntaxKind.InKeyword,
         infer: SyntaxKind.InferKeyword,
+        inferred: SyntaxKind.InferredKeyword,
         instanceof: SyntaxKind.InstanceOfKeyword,
         interface: SyntaxKind.InterfaceKeyword,
         intrinsic: SyntaxKind.IntrinsicKeyword,

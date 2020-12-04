@@ -160,6 +160,7 @@ namespace ts {
         AsKeyword,
         AssertsKeyword,
         AnyKeyword,
+        InferredKeyword,
         AsyncKeyword,
         AwaitKeyword,
         BooleanKeyword,
@@ -567,6 +568,7 @@ namespace ts {
         | SyntaxKind.ImplementsKeyword
         | SyntaxKind.ImportKeyword
         | SyntaxKind.InferKeyword
+        | SyntaxKind.InferredKeyword
         | SyntaxKind.InKeyword
         | SyntaxKind.InstanceOfKeyword
         | SyntaxKind.InterfaceKeyword
@@ -627,6 +629,7 @@ namespace ts {
 
     export type KeywordTypeSyntaxKind =
         | SyntaxKind.AnyKeyword
+        | SyntaxKind.InferredKeyword
         | SyntaxKind.BigIntKeyword
         | SyntaxKind.BooleanKeyword
         | SyntaxKind.IntrinsicKeyword
@@ -4857,33 +4860,34 @@ namespace ts {
     export const enum TypeFlags {
         Any             = 1 << 0,
         Unknown         = 1 << 1,
-        String          = 1 << 2,
-        Number          = 1 << 3,
-        Boolean         = 1 << 4,
-        Enum            = 1 << 5,
-        BigInt          = 1 << 6,
-        StringLiteral   = 1 << 7,
-        NumberLiteral   = 1 << 8,
-        BooleanLiteral  = 1 << 9,
-        EnumLiteral     = 1 << 10,  // Always combined with StringLiteral, NumberLiteral, or Union
-        BigIntLiteral   = 1 << 11,
-        ESSymbol        = 1 << 12,  // Type of symbol primitive introduced in ES6
-        UniqueESSymbol  = 1 << 13,  // unique symbol
-        Void            = 1 << 14,
-        Undefined       = 1 << 15,
-        Null            = 1 << 16,
-        Never           = 1 << 17,  // Never type
-        TypeParameter   = 1 << 18,  // Type parameter
-        Object          = 1 << 19,  // Object type
-        Union           = 1 << 20,  // Union (T | U)
-        Intersection    = 1 << 21,  // Intersection (T & U)
-        Index           = 1 << 22,  // keyof T
-        IndexedAccess   = 1 << 23,  // T[K]
-        Conditional     = 1 << 24,  // T extends U ? X : Y
-        Substitution    = 1 << 25,  // Type parameter substitution
-        NonPrimitive    = 1 << 26,  // intrinsic object type
-        TemplateLiteral = 1 << 27,  // Template literal type
-        StringMapping   = 1 << 28,  // Uppercase/Lowercase type
+        Inferred        = 1 << 2,
+        String          = 1 << 3,
+        Number          = 1 << 4,
+        Boolean         = 1 << 5,
+        Enum            = 1 << 6,
+        BigInt          = 1 << 7,
+        StringLiteral   = 1 << 8,
+        NumberLiteral   = 1 << 9,
+        BooleanLiteral  = 1 << 10,
+        EnumLiteral     = 1 << 11,  // Always combined with StringLiteral, NumberLiteral, or Union
+        BigIntLiteral   = 1 << 12,
+        ESSymbol        = 1 << 13,  // Type of symbol primitive introduced in ES6
+        UniqueESSymbol  = 1 << 14,  // unique symbol
+        Void            = 1 << 15,
+        Undefined       = 1 << 16,
+        Null            = 1 << 17,
+        Never           = 1 << 18,  // Never type
+        TypeParameter   = 1 << 19,  // Type parameter
+        Object          = 1 << 20,  // Object type
+        Union           = 1 << 21,  // Union (T | U)
+        Intersection    = 1 << 22,  // Intersection (T & U)
+        Index           = 1 << 23,  // keyof T
+        IndexedAccess   = 1 << 24,  // T[K]
+        Conditional     = 1 << 25,  // T extends U ? X : Y
+        Substitution    = 1 << 26,  // Type parameter substitution
+        NonPrimitive    = 1 << 27,  // intrinsic object type
+        TemplateLiteral = 1 << 28,  // Template literal type
+        StringMapping   = 1 << 29,  // Uppercase/Lowercase type
 
         /* @internal */
         AnyOrUnknown = Any | Unknown,
@@ -4898,7 +4902,7 @@ namespace ts {
         DefinitelyFalsy = StringLiteral | NumberLiteral | BigIntLiteral | BooleanLiteral | Void | Undefined | Null,
         PossiblyFalsy = DefinitelyFalsy | String | Number | BigInt | Boolean,
         /* @internal */
-        Intrinsic = Any | Unknown | String | Number | BigInt | Boolean | BooleanLiteral | ESSymbol | Void | Undefined | Null | Never | NonPrimitive,
+        Intrinsic = Any | Unknown | Inferred | String | Number | BigInt | Boolean | BooleanLiteral | ESSymbol | Void | Undefined | Null | Never | NonPrimitive,
         /* @internal */
         Primitive = String | Number | BigInt | Boolean | Enum | EnumLiteral | ESSymbol | Void | Undefined | Null | Literal | UniqueESSymbol,
         StringLike = String | StringLiteral | TemplateLiteral | StringMapping,
@@ -4918,19 +4922,19 @@ namespace ts {
         Instantiable = InstantiableNonPrimitive | InstantiablePrimitive,
         StructuredOrInstantiable = StructuredType | Instantiable,
         /* @internal */
-        ObjectFlagsType = Any | Nullable | Never | Object | Union | Intersection,
+        ObjectFlagsType = Any | Inferred | Nullable | Never | Object | Union | Intersection,
         /* @internal */
         Simplifiable = IndexedAccess | Conditional,
         /* @internal */
         Substructure = Object | Union | Intersection | Index | IndexedAccess | Conditional | Substitution | TemplateLiteral | StringMapping,
         // 'Narrowable' types are types where narrowing actually narrows.
         // This *should* be every type other than null, undefined, void, and never
-        Narrowable = Any | Unknown | StructuredOrInstantiable | StringLike | NumberLike | BigIntLike | BooleanLike | ESSymbol | UniqueESSymbol | NonPrimitive,
+        Narrowable = Any | Unknown | Inferred | StructuredOrInstantiable | StringLike | NumberLike | BigIntLike | BooleanLike | ESSymbol | UniqueESSymbol | NonPrimitive,
         /* @internal */
-        NotPrimitiveUnion = Any | Unknown | Enum | Void | Never | StructuredOrInstantiable,
+        NotPrimitiveUnion = Any | Unknown | Inferred | Enum | Void | Never | StructuredOrInstantiable,
         // The following flags are aggregated during union and intersection type construction
         /* @internal */
-        IncludesMask = Any | Unknown | Primitive | Never | Object | Union | Intersection | NonPrimitive | TemplateLiteral,
+        IncludesMask = Any | Unknown | Inferred | Primitive | Never | Object | Union | Intersection | NonPrimitive | TemplateLiteral,
         // The following flags are used for different purposes during union and intersection type construction
         /* @internal */
         IncludesStructuredOrInstantiable = TypeParameter,
@@ -5220,6 +5224,37 @@ namespace ts {
     }
 
     export type StructuredType = ObjectType | UnionType | IntersectionType;
+
+    /** An action taken when the inferred type of an InferredQueryType changes. */
+    export interface InferredQueryAction {
+        on: 'narrow' | 'widen' | 'complete';
+        /** should be idempotent, since we may accidentially call action multiple times */
+        action: (t: InferredQueryType) => boolean;
+    }
+    /**
+     * The inferred query type is essentially all subtypes of the union
+     * ```ts
+     * type JSON = string | boolean | number | null | JSON[] | { [x: string]: JSON  }
+     * ```
+     */
+    export interface InferredQueryType extends Type {
+        types: Type[];  // possible types
+        /* @internal */
+        //objectFlags: ObjectFlags;
+        /* @internal */
+        //propertyCache?: SymbolTable;       // Cache of resolved properties
+        /* @internal */
+        //resolvedProperties: Symbol[];
+        /* @internal */
+        //resolvedIndexType: IndexType;
+        /* @internal */
+        //resolvedStringIndexType: IndexType;
+
+        actions: InferredQueryAction[];
+        /** whether changes to this inferred query should copy rather than modify */
+        isfixed?: boolean;
+        isfresh: boolean;
+    }
 
     /* @internal */
     // An instantiated anonymous type has a target and a mapper

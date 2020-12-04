@@ -1018,6 +1018,54 @@ namespace ts {
         return to;
     }
 
+    export function arrayComprehension<Args extends any[], R>(fn: (...args: Args) => R, filter: (...args: Args) => boolean = () => true): (...input: { [k in keyof Args]: Args[k][] }) => R[] {
+        return (...input) => {
+            const go = (scope: any[], input: any[][]): R[] => {
+                if (input.length === 0) {
+                  return (filter as any)(...scope) ? [(fn as any)(...scope)] : emptyArray;
+                } else {
+                  return arrayChain(input[0], (x) => go(arraySnoc(scope, x), input.slice(1)));
+                }
+              }
+              return go(emptyArray, input);
+        }
+        function arraySnoc<A>(init: A[], end: A) {
+            const len = init.length;
+            const r = Array(len + 1);
+            for (let i = 0; i < len; i++) {
+                r[i] = init[i];
+            }
+            r[len] = end;
+            return r;
+        }
+        function arrayChain<A, B>(ma: A[], f: (a: A) => B[]): B[] {
+            let outLen = 0;
+            const l = ma.length;
+            const temp = new Array(l);
+            for (let i = 0; i < l; i++) {
+                const e = ma[i];
+                const arr = f(e);
+                outLen += arr.length;
+                temp[i] = arr;
+            }
+            const out = Array(outLen);
+            let start = 0;
+            for (let i = 0; i < l; i++) {
+                const arr = temp[i];
+                const l = arr.length;
+                for (let j = 0; j < l; j++) {
+                    out[j + start] = arr[j];
+                }
+                start += l;
+            }
+            return out;
+        }
+    }
+
+    export function reduceL<T, U>(fn: (prev: U, curr: T) => U, init: U): (arr: T[]) => U {
+        return arr => arr.reduce(fn, init);
+    }
+
     /**
      * @return Whether the value was added.
      */
@@ -1682,6 +1730,66 @@ namespace ts {
         }
         else {
             return t => t;
+        }
+    }
+
+    type PipeFn1 = <As extends any[], B>(ab: (...args: As) => B) => (...args: As) => B
+    type PipeFn2 = <As extends any[], B, C>(
+        ab: (...args: As) => B,
+        bc: (b: B) => C,
+    ) => (...args: As) => C
+    type PipeFn3 = <As extends any[], B, C, D>(
+        ab: (...args: As) => B,
+        bc: (...args: [B]) => C,
+        cd: (...args: [C]) => D,
+    ) => (...args: As) => D
+    type PipeFn4 = <As extends any[], B, C, D, E>(
+        ab: (...args: As) => B,
+        bc: (...args: [B]) => C,
+        cd: (...args: [C]) => D,
+        de: (...args: [D]) => E,
+    ) => (...args: As) => E
+    type PipeFn5 = <As extends any[], B, C, D, E, F>(
+        ab: (...args: As) => B,
+        bc: (...args: [B]) => C,
+        cd: (...args: [C]) => D,
+        de: (...args: [D]) => E,
+        ef: (...args: [E]) => F,
+    ) => (...args: As) => F
+    type PipeFnUntyped = <As extends unknown[]>(
+        ...fns: [(...args: As) => unknown, ...Array<(arg: unknown) => unknown>]
+    ) => (...args: As) => unknown
+    type PipeFn = PipeFn1 &
+        PipeFn2 &
+        PipeFn3 &
+        PipeFn4 &
+        PipeFn5 &
+        PipeFnUntyped
+
+    export const pipe: PipeFn = (...fns: [Function, ...Function[]]) => {
+        if (fns.length === 1) {
+            return fns[0] as any;
+        }
+        if (fns.length === 2) {
+            return (...args: any[]) => fns[1](fns[0](...args));
+        }
+        if (fns.length === 3) {
+            return (...args: any[]) => fns[2](fns[1](fns[0](...args)));
+        }
+        if (fns.length === 4) {
+            return (...args: any[]) => fns[3](fns[2](fns[1](fns[0](...args))));
+        }
+        if (fns.length === 5) {
+            return (...args: any[]) => fns[4](fns[3](fns[2](fns[1](fns[0](...args)))));
+        }
+        const len = fns.length - 1
+        return function (this: any) {
+            // eslint-disable-next-line prefer-rest-params
+            let y: any = arguments;
+            for (let i = 0; i <= len; i++) {
+                y = [fns[i].apply(this, y)];
+            }
+            return y[0];
         }
     }
 
