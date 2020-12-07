@@ -13,3 +13,4 @@
 + `function getCommonSubtype`
 + `function getCommonSupertype`
 + `function checkTypeRelatedTo` - lots of code on how to compare types, especially structured types (arrays, objects)
++ `function getBestMatchingType` - gets the best type that matches out of a union or intersection. Use for reference on property access, find super types, etc

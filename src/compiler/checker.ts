@@ -1028,7 +1028,11 @@ namespace ts {
 
         function createInferredQueryType(): InferredQueryType {
             const type = createType(TypeFlags.Inferred) as InferredQueryType;
-            type.types = globalJsonType.types;
+            // TODO(inferred): find a better way to do this without relying on globalJsonType
+            const jsonTypes = globalJsonType.types;
+            const globalJsonArrayType = find(jsonTypes, isArrayOrTupleLikeType)!;
+            const globalJsonObjectType = find(jsonTypes, e => getObjectFlags(e) !== 0 && !isArrayOrTupleLikeType(e))!;
+            type.types = [stringType, numberType, booleanType, nullType, globalJsonArrayType, globalJsonObjectType];
             type.actions = [];
             type.isfresh = true;
             return type;
@@ -1158,50 +1162,6 @@ namespace ts {
         //     return true;
         // }
 
-        // function addInferredQueryRestriction(restrict: InferredQueryRestrict | undefined, restriction: Type) {
-        //     if (restrict && isTypeInInferredQueryDomain(restriction)) {
-        //         if (restriction.flags & TypeFlags.Intersection) {
-        //             (restriction as IntersectionType).types.forEach(t => addInferredQueryRestriction(restrict, t));
-        //             return;
-        //         }
-        //         let addedProps = false;
-        //         let addedInferred = false;
-        //         if (isTypeInferredQuery(restriction)) {
-        //             addedInferred = combineInferredQueryRestrictions(restrict, restriction.restriction);
-        //         }
-        //         else {
-        //             addedProps = addInferredQueryObjectRestriction(restrict, restriction);
-        //         }
-        //         if (addedProps || addedInferred || pushUnique(restrict.types, [restriction])) {
-        //             removeInvalidInferredQueryAlternates(restrict.parent);
-        //             executeInferredQueryActions(restrict.parent, 'narrow');
-        //         }
-        //     }
-        // }
-
-        // function addInferredQueryAlternate(type: Type | undefined, ...alternates: Type[]) {
-        //     if (isTypeInferredQuery(type)) {
-        //         const poss = alternates.reduce(
-        //             (acc, a) => {
-        //                 if (isTypeInInferredQueryDomain(a)) {
-        //                     const r: InferredQueryRestrict = { types: [], parent: type };
-        //                     addInferredQueryRestriction(r, a);
-        //                     acc.push([r, a]);
-        //                 }
-        //                 return acc;
-        //             },
-        //             [] as InferredQueryPossibility[]
-        //         )
-        //         // TODO(inferred): Write function to compare equality of InferredQueryRestrict
-        //         if (pushUnique(type.alternates, poss.map(([r]) => r))) {
-        //             executeInferredQueryActions(type, 'widen');
-        //             removeInvalidInferredQueryAlternates(type);
-        //             return poss;
-        //         }
-        //     }
-        //     return [];
-        // }
-
         function addInferredQueryAction(type: Type | undefined, ...actions: InferredQueryAction[]) {
             if (isTypeInferredQuery(type)) {
                 type.actions.push(...actions);
@@ -1272,6 +1232,48 @@ namespace ts {
             }
         }
 
+        function withEveryTypePossibility<Inputs extends Type[], R>(fn: (...args: Inputs) => R, inputFilter?: (...args: Inputs) => boolean): (...inputs: Inputs) => R[] {
+            return (...inputs) => {
+                const hasInferred = inputs.some(isTypeInferredQuery);
+                if (!hasInferred) {
+                    return [fn(...inputs)];
+                }
+
+                const possibilities = inputs.map(getTypePossibilities);
+                const allFixed = possibilities.every(p => p.length === 1);
+                if (allFixed) {
+                    return [fn(...(possibilities.map(p => p[0]) as Inputs))];
+                }
+                return arrayComprehension(fn, inputFilter)(...(possibilities as any));
+            };
+        }
+
+        function handleTypeRuleResults<Inputs extends Type[]>(results: TypeRuleResults<Inputs>, inputs: Inputs) {
+            if (results.length === 0) {
+                // we have no results. This means there were no valid inputs, which would normally produce
+                // an error if not inferred. TODO(inferred): Emit some kind of error here
+                return errorType;
+            }
+
+            // if we have multiple valid constructions, we restrict the types based on the valid inputs
+            // and return an inferred query that is restricted based on the valid outputs
+            let resultType = results.length === 1 ? results[0].output : createInferredQueryType();
+
+            restrictInputTypes(results, inputs);
+            restrictOutputType(results, resultType);
+            if (isTypeInferredQuery(resultType) && resultType.types.length === 1) {
+                // if we already found a constraint for the type
+                // just return that constraint, adding listeners won't do anything
+                resultType = resultType.types[0];
+            }
+            // we also attach listeners to the result and the input types which restrict the other types
+            // when they reach a valid result state.
+            addOutputActions(results, inputs, resultType);
+            addInputActions(results, inputs, resultType);
+
+            return resultType;
+        }
+
         function createInferredTypeRule<Inputs extends Type[]>(rule: (...args: Inputs) => Type, inputFilter?: (...args: Inputs) => boolean): (...inputs: Inputs) => Type {
             return (...inputs) => {
                 const hasInferred = inputs.some(isTypeInferredQuery);
@@ -1291,36 +1293,14 @@ namespace ts {
                 // TODO(inferred): this is an extremely expensive operation
                 const results = checkAllPossibilities(rule, inputFilter)(...(possibilities as any));
 
-                if (results.length === 0) {
-                    // we have no results. This means there were no valid inputs, which would normally produce
-                    // an error if not inferred. TODO(inferred): Emit some kind of error here
-                    return errorType;
-                }
-
-                // if we have multiple valid constructions, we restrict the types based on the valid inputs
-                // and return an inferred query that is restricted based on the valid outputs
-                let resultType = results.length === 1 ? results[0].output : createInferredQueryType();
-
-                restrictInputTypes(results, inputs);
-                restrictOutputType(results, resultType);
-                if (isTypeInferredQuery(resultType) && resultType.types.length === 1) {
-                    // if we already found a constraint for the type
-                    // just return that constraint, adding listeners won't do anything
-                    resultType = resultType.types[0];
-                }
-                // we also attach listeners to the result and the input types which restrict the other types
-                // when they reach a valid result state.
-                addOutputActions(results, inputs, resultType);
-                addInputActions(results, inputs, resultType);
-
-                return resultType;
+                return handleTypeRuleResults(results, inputs);
             }
         }
 
         function findSupertype(x: Type, y: Type): Type | undefined {
             // the supertype for two of the same type is that type itself
             // TODO(inferred): Make a better type equality check
-            if (x === y) {
+            if (x.id === y.id) {
                 return x;
             }
             // for non object types, we simply take the intersection
@@ -1334,23 +1314,25 @@ namespace ts {
             }
             // if one (but not both) of xf and yf are a primitive
             // there is no supertype
-            if (xf & TypeFlags.Primitive || yf & TypeFlags.Primitive) {
+            else if (xf & TypeFlags.Primitive || yf & TypeFlags.Primitive) {
                 return undefined;
             }
             // we treat arrays and objects as disjoint
-            if ((isArrayOrTupleLikeType(x) && !isArrayOrTupleLikeType(y)) ||
+            else if ((isArrayOrTupleLikeType(x) && !isArrayOrTupleLikeType(y)) ||
                 (isArrayOrTupleLikeType(y) && !isArrayOrTupleLikeType(x))) {
                 return undefined;
             }
-            // TODO(inferred): check all properties of object types
-            // this would require some kind of depth checking,
-            // since recursive object types such as type T0 = { x: T0 }
-            // are possible
+            else {
+                // TODO(inferred): check all properties of object types
+                // this would require some kind of depth checking,
+                // since recursive object types such as type T0 = { x: T0 }
+                // are possible
 
-            // for now just intersect
-            const result = getIntersectionType([x, y]);
-            if (result !== neverType) {
-                return result;
+                // for now just intersect
+                const result = getIntersectionType([x, y]);
+                if (result !== neverType) {
+                    return result;
+                }
             }
         }
 
@@ -1392,8 +1374,15 @@ namespace ts {
             return type.types;
         }
 
-        function restrictInferredQuery(type: Type, restrict: Type | Type[]) {
-            if (!isTypeInferredQuery(type)) return;
+        /**
+         * Modifies an inferred query, restricting its possibilities to those specified
+         * by restrict. Returns a boolean indicating that either the restriction was successful,
+         * or resulted in no possibilities.
+         * @param type a type, possibly inferred query
+         * @param restrict a type or type array to restrict with
+         */
+        function restrictInferredQuery(type: Type, restrict: Type | Type[]): boolean {
+            if (!isTypeInferredQuery(type)) return false;
             const possType = getTypePossibilities(type);
             // TODO(inferred): Perform a more in depth equality comparision
             const possRestrict = deduplicate(Array.isArray(restrict) ? restrict : getTypePossibilities(restrict), (x, y) => x.id === y.id);
@@ -1404,7 +1393,7 @@ namespace ts {
             // it remains fresh
             type.isfresh = type.isfresh && !changed;
             if (!changed) {
-                return;
+                return true;
             }
             if (intersected.length === 1) {
                 executeInferredQueryActions(type, 'complete');
@@ -1412,6 +1401,7 @@ namespace ts {
             else if (intersected.length !== 0) {
                 executeInferredQueryActions(type, 'narrow');
             }
+            return intersected.length !== 0;
         }
 
         function executeInferredQueryActions(type: InferredQueryType, action: 'widen' | 'narrow' | 'complete') {
@@ -1451,6 +1441,13 @@ namespace ts {
                         ({ input, output: withNewErrorContainer(checker)(...input)}),
                     validInput
                 ),
+                // if there is only one possibility, we call any errors that may exist
+                poss => {
+                    if (poss.length === 1) {
+                        poss[0].output[1].forEach(e => e());
+                    }
+                    return poss;
+                },
                 reduceL((acc, { input, output }) => {
                     if (output[1].length === 0) {
                         acc.push({input, output: output[0], valid: true});
@@ -2811,7 +2808,7 @@ namespace ts {
         function checkAndReportErrorForExtendingInterface(errorLocation: Node): boolean {
             const expression = getEntityNameForExtendingInterface(errorLocation);
             if (expression && resolveEntityName(expression, SymbolFlags.Interface, /*ignoreErrors*/ true)) {
-                error(errorLocation, Diagnostics.Cannot_extend_an_interface_0_Did_you_mean_implements, getTextOfNode(expression));
+                maybeSuspendError(() => error(errorLocation, Diagnostics.Cannot_extend_an_interface_0_Did_you_mean_implements, getTextOfNode(expression)));
                 return true;
             }
             return false;
@@ -11734,10 +11731,10 @@ namespace ts {
             return type;
         }
 
-        function getApparentTypeOfInferredQuery(type: InferredQueryType) {
-            const inf = getInferredQueryInference(type);
-            return inf ? getApparentType(inf) : globalJsonType;
-        }
+        // function getApparentTypeOfInferredQuery(type: InferredQueryType) {
+        //     const inf = getInferredQueryInference(type);
+        //     return inf ? getApparentType(inf) : globalJsonType;
+        // }
 
         /**
          * For a type parameter, return the base constraint of the type parameter. For the string, number,
@@ -11756,7 +11753,7 @@ namespace ts {
                 t.flags & TypeFlags.NonPrimitive ? emptyObjectType :
                 t.flags & TypeFlags.Index ? keyofConstraintType :
                 t.flags & TypeFlags.Unknown && !strictNullChecks ? emptyObjectType :
-                isTypeInferredQuery(t) ? getApparentTypeOfInferredQuery(t) :
+                // isTypeInferredQuery(t) ? getApparentTypeOfInferredQuery(t) :
                 t;
         }
 
@@ -14483,12 +14480,14 @@ namespace ts {
                 if (prop) {
                     if (reportDeprecated && accessNode && getDeclarationNodeFlagsFromSymbol(prop) & NodeFlags.Deprecated && isUncalledFunctionReference(accessNode, prop)) {
                         const deprecatedNode = accessExpression?.argumentExpression ?? (isIndexedAccessTypeNode(accessNode) ? accessNode.indexType : accessNode);
-                        errorOrSuggestion(/* isError */ false, deprecatedNode, Diagnostics._0_is_deprecated, propName as string);
+                        if (!globalErrorContainer) {
+                            errorOrSuggestion(/* isError */ false, deprecatedNode, Diagnostics._0_is_deprecated, propName as string);
+                        }
                     }
                     if (accessExpression) {
                         markPropertyAsReferenced(prop, accessExpression, /*isThisAccess*/ accessExpression.expression.kind === SyntaxKind.ThisKeyword);
                         if (isAssignmentToReadonlyEntity(accessExpression, prop, getAssignmentTargetKind(accessExpression))) {
-                            error(accessExpression.argumentExpression, Diagnostics.Cannot_assign_to_0_because_it_is_a_read_only_property, symbolToString(prop));
+                            maybeSuspendError(() => error(accessExpression.argumentExpression, Diagnostics.Cannot_assign_to_0_because_it_is_a_read_only_property, symbolToString(prop)));
                             return undefined;
                         }
                         if (accessFlags & AccessFlags.CacheSymbol) {
@@ -14507,11 +14506,11 @@ namespace ts {
                     if (accessNode && everyType(objectType, t => !(<TupleTypeReference>t).target.hasRestElement) && !(accessFlags & AccessFlags.NoTupleBoundsCheck)) {
                         const indexNode = getIndexNodeForAccessExpression(accessNode);
                         if (isTupleType(objectType)) {
-                            error(indexNode, Diagnostics.Tuple_type_0_of_length_1_has_no_element_at_index_2,
-                                typeToString(objectType), getTypeReferenceArity(objectType), unescapeLeadingUnderscores(propName));
+                            maybeSuspendError(() => error(indexNode, Diagnostics.Tuple_type_0_of_length_1_has_no_element_at_index_2,
+                                typeToString(objectType), getTypeReferenceArity(objectType), unescapeLeadingUnderscores(propName)));
                         }
                         else {
-                            error(indexNode, Diagnostics.Property_0_does_not_exist_on_type_1, unescapeLeadingUnderscores(propName), typeToString(objectType));
+                            maybeSuspendError(() => error(indexNode, Diagnostics.Property_0_does_not_exist_on_type_1, unescapeLeadingUnderscores(propName), typeToString(objectType)));
                         }
                     }
                     errorIfWritingToReadonlyIndex(getIndexInfoOfType(objectType, IndexKind.Number));
@@ -14530,13 +14529,13 @@ namespace ts {
                 if (indexInfo) {
                     if (accessFlags & AccessFlags.NoIndexSignatures && indexInfo === stringIndexInfo) {
                         if (accessExpression) {
-                            error(accessExpression, Diagnostics.Type_0_cannot_be_used_to_index_type_1, typeToString(indexType), typeToString(originalObjectType));
+                            maybeSuspendError(() => error(accessExpression, Diagnostics.Type_0_cannot_be_used_to_index_type_1, typeToString(indexType), typeToString(originalObjectType)));
                         }
                         return undefined;
                     }
                     if (accessNode && !isTypeAssignableToKind(indexType, TypeFlags.String | TypeFlags.Number)) {
                         const indexNode = getIndexNodeForAccessExpression(accessNode);
-                        error(indexNode, Diagnostics.Type_0_cannot_be_used_as_an_index_type, typeToString(indexType));
+                        maybeSuspendError(() => error(indexNode, Diagnostics.Type_0_cannot_be_used_as_an_index_type, typeToString(indexType)));
                         return noUncheckedIndexedAccessCandidate ? getUnionType([indexInfo.type, undefinedType]) : indexInfo.type;
                     }
                     errorIfWritingToReadonlyIndex(indexInfo);
@@ -14551,7 +14550,7 @@ namespace ts {
                 if (accessExpression && !isConstEnumObjectType(objectType)) {
                     if (isObjectLiteralType(objectType)) {
                         if (noImplicitAny && indexType.flags & (TypeFlags.StringLiteral | TypeFlags.NumberLiteral)) {
-                            diagnostics.add(createDiagnosticForNode(accessExpression, Diagnostics.Property_0_does_not_exist_on_type_1, (indexType as StringLiteralType).value, typeToString(objectType)));
+                            maybeSuspendError(() => error(accessExpression, Diagnostics.Property_0_does_not_exist_on_type_1, (indexType as StringLiteralType).value, typeToString(objectType)));
                             return undefinedType;
                         }
                         else if (indexType.flags & (TypeFlags.Number | TypeFlags.String)) {
@@ -14563,52 +14562,54 @@ namespace ts {
                     }
 
                     if (objectType.symbol === globalThisSymbol && propName !== undefined && globalThisSymbol.exports!.has(propName) && (globalThisSymbol.exports!.get(propName)!.flags & SymbolFlags.BlockScoped)) {
-                        error(accessExpression, Diagnostics.Property_0_does_not_exist_on_type_1, unescapeLeadingUnderscores(propName), typeToString(objectType));
+                        maybeSuspendError(() => error(accessExpression, Diagnostics.Property_0_does_not_exist_on_type_1, unescapeLeadingUnderscores(propName), typeToString(objectType)));
                     }
                     else if (noImplicitAny && !compilerOptions.suppressImplicitAnyIndexErrors && !suppressNoImplicitAnyError) {
                         if (propName !== undefined && typeHasStaticProperty(propName, objectType)) {
                             const typeName = typeToString(objectType);
-                            error(accessExpression, Diagnostics.Property_0_does_not_exist_on_type_1_Did_you_mean_to_access_the_static_member_2_instead, propName as string, typeName, typeName + "[" + getTextOfNode(accessExpression.argumentExpression) + "]");
+                            maybeSuspendError(() => error(accessExpression, Diagnostics.Property_0_does_not_exist_on_type_1_Did_you_mean_to_access_the_static_member_2_instead, propName as string, typeName, typeName + "[" + getTextOfNode(accessExpression.argumentExpression) + "]"));
                         }
                         else if (getIndexTypeOfType(objectType, IndexKind.Number)) {
-                            error(accessExpression.argumentExpression, Diagnostics.Element_implicitly_has_an_any_type_because_index_expression_is_not_of_type_number);
+                            maybeSuspendError(() => error(accessExpression.argumentExpression, Diagnostics.Element_implicitly_has_an_any_type_because_index_expression_is_not_of_type_number));
                         }
                         else {
                             let suggestion: string | undefined;
                             if (propName !== undefined && (suggestion = getSuggestionForNonexistentProperty(propName as string, objectType))) {
                                 if (suggestion !== undefined) {
-                                    error(accessExpression.argumentExpression, Diagnostics.Property_0_does_not_exist_on_type_1_Did_you_mean_2, propName as string, typeToString(objectType), suggestion);
+                                    maybeSuspendError(() => error(accessExpression.argumentExpression, Diagnostics.Property_0_does_not_exist_on_type_1_Did_you_mean_2, propName as string, typeToString(objectType), suggestion));
                                 }
                             }
                             else {
                                 const suggestion = getSuggestionForNonexistentIndexSignature(objectType, accessExpression, indexType);
                                 if (suggestion !== undefined) {
-                                    error(accessExpression, Diagnostics.Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature_Did_you_mean_to_call_1, typeToString(objectType), suggestion);
+                                    maybeSuspendError(() => error(accessExpression, Diagnostics.Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature_Did_you_mean_to_call_1, typeToString(objectType), suggestion));
                                 }
                                 else {
-                                    let errorInfo: DiagnosticMessageChain | undefined;
-                                    if (indexType.flags & TypeFlags.EnumLiteral) {
-                                        errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, "[" + typeToString(indexType) + "]", typeToString(objectType));
-                                    }
-                                    else if (indexType.flags & TypeFlags.UniqueESSymbol) {
-                                        const symbolName = getFullyQualifiedName((indexType as UniqueESSymbolType).symbol, accessExpression);
-                                        errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, "[" + symbolName + "]", typeToString(objectType));
-                                    }
-                                    else if (indexType.flags & TypeFlags.StringLiteral) {
-                                        errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, (indexType as StringLiteralType).value, typeToString(objectType));
-                                    }
-                                    else if (indexType.flags & TypeFlags.NumberLiteral) {
-                                        errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, (indexType as NumberLiteralType).value, typeToString(objectType));
-                                    }
-                                    else if (indexType.flags & (TypeFlags.Number | TypeFlags.String)) {
-                                        errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.No_index_signature_with_a_parameter_of_type_0_was_found_on_type_1, typeToString(indexType), typeToString(objectType));
-                                    }
+                                    maybeSuspendError(() => {
+                                        let errorInfo: DiagnosticMessageChain | undefined;
+                                        if (indexType.flags & TypeFlags.EnumLiteral) {
+                                            errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, "[" + typeToString(indexType) + "]", typeToString(objectType));
+                                        }
+                                        else if (indexType.flags & TypeFlags.UniqueESSymbol) {
+                                            const symbolName = getFullyQualifiedName((indexType as UniqueESSymbolType).symbol, accessExpression);
+                                            errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, "[" + symbolName + "]", typeToString(objectType));
+                                        }
+                                        else if (indexType.flags & TypeFlags.StringLiteral) {
+                                            errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, (indexType as StringLiteralType).value, typeToString(objectType));
+                                        }
+                                        else if (indexType.flags & TypeFlags.NumberLiteral) {
+                                            errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.Property_0_does_not_exist_on_type_1, (indexType as NumberLiteralType).value, typeToString(objectType));
+                                        }
+                                        else if (indexType.flags & (TypeFlags.Number | TypeFlags.String)) {
+                                            errorInfo = chainDiagnosticMessages(/* details */ undefined, Diagnostics.No_index_signature_with_a_parameter_of_type_0_was_found_on_type_1, typeToString(indexType), typeToString(objectType));
+                                        }
 
-                                    errorInfo = chainDiagnosticMessages(
-                                        errorInfo,
-                                        Diagnostics.Element_implicitly_has_an_any_type_because_expression_of_type_0_can_t_be_used_to_index_type_1, typeToString(fullIndexType), typeToString(objectType)
-                                    );
-                                    diagnostics.add(createDiagnosticForNodeFromMessageChain(accessExpression, errorInfo));
+                                        errorInfo = chainDiagnosticMessages(
+                                            errorInfo,
+                                            Diagnostics.Element_implicitly_has_an_any_type_because_expression_of_type_0_can_t_be_used_to_index_type_1, typeToString(fullIndexType), typeToString(objectType)
+                                        );
+                                        diagnostics.add(createDiagnosticForNodeFromMessageChain(accessExpression, errorInfo));
+                                    });
                                 }
                             }
                         }
@@ -14622,13 +14623,13 @@ namespace ts {
             if (accessNode) {
                 const indexNode = getIndexNodeForAccessExpression(accessNode);
                 if (indexType.flags & (TypeFlags.StringLiteral | TypeFlags.NumberLiteral)) {
-                    error(indexNode, Diagnostics.Property_0_does_not_exist_on_type_1, "" + (<StringLiteralType | NumberLiteralType>indexType).value, typeToString(objectType));
+                    maybeSuspendError(() => error(indexNode, Diagnostics.Property_0_does_not_exist_on_type_1, "" + (<StringLiteralType | NumberLiteralType>indexType).value, typeToString(objectType)));
                 }
                 else if (indexType.flags & (TypeFlags.String | TypeFlags.Number)) {
-                    error(indexNode, Diagnostics.Type_0_has_no_matching_index_signature_for_type_1, typeToString(objectType), typeToString(indexType));
+                    maybeSuspendError(() => error(indexNode, Diagnostics.Type_0_has_no_matching_index_signature_for_type_1, typeToString(objectType), typeToString(indexType)));
                 }
                 else {
-                    error(indexNode, Diagnostics.Type_0_cannot_be_used_as_an_index_type, typeToString(indexType));
+                    maybeSuspendError(() => error(indexNode, Diagnostics.Type_0_cannot_be_used_as_an_index_type, typeToString(indexType)));
                 }
             }
             if (isTypeAny(indexType)) {
@@ -14638,7 +14639,7 @@ namespace ts {
 
             function errorIfWritingToReadonlyIndex(indexInfo: IndexInfo | undefined): void {
                 if (indexInfo && indexInfo.isReadonly && accessExpression && (isAssignmentTarget(accessExpression) || isDeleteTarget(accessExpression))) {
-                    error(accessExpression, Diagnostics.Index_signature_in_type_0_only_permits_reading, typeToString(objectType));
+                    maybeSuspendError(() => error(accessExpression, Diagnostics.Index_signature_in_type_0_only_permits_reading, typeToString(objectType)));
                 }
             }
         }
@@ -14821,76 +14822,33 @@ namespace ts {
             });
         }
 
+        function getPossibleIndexedAccessTypes(noUncheckedIndexedAccessCandidate?: boolean, accessNode?: ElementAccessExpression | IndexedAccessTypeNode | PropertyName | BindingName | SyntheticExpression, accessFlags?: AccessFlags, aliasSymbol?: Symbol, aliasTypeArguments?: readonly Type[]) {
+            return pipe(
+                withEveryTypePossibility((objectType, indexType) => {
+                    const output = withNewErrorContainer(() => getIndexedAccessTypeOrUndefined(objectType, indexType, noUncheckedIndexedAccessCandidate, accessNode, accessFlags, aliasSymbol, aliasTypeArguments))();
+                    return {input: [objectType, indexType] as [Type, Type], output};
+                }),
+                // if there is only a single possibility, we make sure to call the errors
+                poss => {
+                    if (poss.length === 1) {
+                        poss[0].output[1].forEach(e => e());
+                    }
+                    return poss;
+                },
+                // we filter to those that have no errors and are not undefined
+                reduceL((acc, { input, output }) => {
+                    if (output[1].length === 0 && output[0] !== undefined) {
+                        acc.push({ input, output: output[0] });
+                    }
+                    return acc;
+                }, [] as Array<{ input: [Type, Type], output: Type }>)
+            );
+        }
+
         function getIndexedAccessTypeOrUndefined(objectType: Type, indexType: Type, noUncheckedIndexedAccessCandidate?: boolean, accessNode?: ElementAccessExpression | IndexedAccessTypeNode | PropertyName | BindingName | SyntheticExpression, accessFlags = AccessFlags.None, aliasSymbol?: Symbol, aliasTypeArguments?: readonly Type[]): Type | undefined {
             if (objectType === wildcardType || indexType === wildcardType) {
                 return wildcardType;
             }
-
-            // if (isTypeInferredQuery(objectType)) {
-            //     // Example:
-            //     // we have an inferred type that can be a string, a number, or an array, i.e. alternates is set to [string, number, boolean[]]
-            //     // later we index that inferred type. Since number doesn't have an index, the getIndexedAccessType function will return undefined
-            //     // so we want to remove number from the alternates.
-            //     // since we have indexes for both string and boolean[], if we are reading the result may be string | boolean
-            //     // we can return an inferred with an action that will further reduce the parent, since there is a relation between
-            //     // the alternates in the result of reading and the alternates in the parent
-            //     // reading:
-            //     //   - result is string | boolean => boolean, so objectType is string | boolean[] => boolean[]
-            //     const possibilities = getInferredQueryPossibilities(objectType, true);
-            //     if (possibilities.length) {
-            //         const indexedAccessTypes = possibilities.reduce((acc, [alt, p]) => {
-            //             // we don't pass the accessNode to suppress errors in getPropertyTypeForIndexType
-            //             const result = getIndexedAccessTypeOrUndefined(p, indexType, undefined, undefined, accessFlags, undefined, undefined, createInferred);
-            //             if (result) {
-            //                 acc.push([[alt, p] as InferredQueryPossibility, result]);
-            //             }
-            //             else {
-            //                 removeInferredQueryAlternate(objectType, alt);
-            //             }
-            //             return acc;
-            //         }, [] as [InferredQueryPossibility, Type][]);
-            //         // if none of the possibilities had indexes, we don't return so that we can provide an error
-            //         // with the inferred type
-            //         if (indexedAccessTypes.length === 1) {
-            //             return indexedAccessTypes[0][1];
-            //         }
-            //         else if (indexedAccessTypes.length > 1) {
-            //             const indexInf = createInferredQueryType();
-            //             // array associating original poss to new poss [original, new]
-            //             const indexInfPoss = indexedAccessTypes.reduce((acc, [poss, result]) => {
-            //                 const r = addInferredQueryAlternate(indexInf, result);
-            //                 if (r.length) {
-            //                     acc.push([poss, r[0]]);
-            //                 }
-            //                 return acc;
-            //             }, [] as [InferredQueryPossibility, InferredQueryPossibility][]);
-            //             // if the accessed type is reduced, we can reduce the index type
-            //             addInferredQueryAction(indexInf, {
-            //                 on: 'narrow',
-            //                 action: (_, poss) => {
-            //                     // removed possibility is one that was in index types, but is no longer a possiblity
-            //                     // we map from indexInf possibilities back to objectType possibilites,
-            //                     // through indexedAccessTypes
-            //                     const removed = indexInfPoss.filter(([, newP]) => !poss.find(p => newP[0] === p[0]));
-
-            //                     // we remove those possibilites from the original objectType
-            //                     for (const [old] of removed) {
-            //                         removeInferredQueryAlternate(objectType, old[0]);
-            //                     }
-
-            //                     // we don't have a path that widens a type again after
-            //                     // it has been narrowed completely
-            //                     // so we can remove this listener when there is only one possibility
-            //                     return poss.length === 1;
-            //                 }
-            //             });
-            //             // if the indexed type is reduced, the access type should also reduce
-            //             // don't need to add listener in this case, since the expresssion is reevaluated?
-
-            //             return indexInf;
-            //         }
-            //     }
-            // }
 
             const shouldIncludeUndefined = noUncheckedIndexedAccessCandidate ||
                 (!!compilerOptions.noUncheckedIndexedAccess &&
@@ -19924,7 +19882,7 @@ namespace ts {
         // flags for the string, number, boolean, "", 0, false, void, undefined, or null types respectively. Returns
         // no flags for all other types (including non-falsy literal types).
         function getFalsyFlags(type: Type): TypeFlags {
-            return type.flags & TypeFlags.Union ? getFalsyFlagsOfTypes((<UnionType>type).types) :
+            return type.flags & TypeFlags.Union || isTypeInferredQuery(type) ? getFalsyFlagsOfTypes((type as UnionType | InferredQueryType).types) :
                 type.flags & TypeFlags.StringLiteral ? (<StringLiteralType>type).value === "" ? TypeFlags.StringLiteral : 0 :
                 type.flags & TypeFlags.NumberLiteral ? (<NumberLiteralType>type).value === 0 ? TypeFlags.NumberLiteral : 0 :
                 type.flags & TypeFlags.BigIntLiteral ? isZeroBigInt(<BigIntLiteralType>type) ? TypeFlags.BigIntLiteral : 0 :
@@ -19978,7 +19936,8 @@ namespace ts {
                 deferredGlobalNonNullableTypeAlias = getGlobalSymbol("NonNullable" as __String, SymbolFlags.TypeAlias, /*diagnostic*/ undefined) || unknownSymbol;
             }
             // Use NonNullable global type alias if available to improve quick info/declaration emit
-            if (deferredGlobalNonNullableTypeAlias !== unknownSymbol) {
+            // TODO(inferred): make getTypeAliasInstantiation work with inferred
+            if (deferredGlobalNonNullableTypeAlias !== unknownSymbol && !isTypeInferredQuery(type)) {
                 return getTypeAliasInstantiation(deferredGlobalNonNullableTypeAlias, [type]);
             }
             return getTypeWithFacts(type, TypeFacts.NEUndefinedOrNull); // Type alias unavailable, fall back to non-higher-order behavior
@@ -22021,11 +21980,11 @@ namespace ts {
         }
 
         function forEachType<T>(type: Type, f: (t: Type) => T | undefined): T | undefined {
-            return type.flags & TypeFlags.Union ? forEach((<UnionType>type).types, f) : f(type);
+            return type.flags & TypeFlags.Union || isTypeInferredQuery(type) ? forEach((type as UnionType | InferredQueryType).types, f) : f(type);
         }
 
         function everyType(type: Type, f: (t: Type) => boolean): boolean {
-            return type.flags & TypeFlags.Union ? every((<UnionType>type).types, f) : f(type);
+            return type.flags & TypeFlags.Union || isTypeInferredQuery(type) ? every((type as UnionType | InferredQueryType).types, f) : f(type);
         }
 
         function filterType(type: Type, f: (t: Type) => boolean): Type {
@@ -22034,11 +21993,19 @@ namespace ts {
                 const filtered = filter(types, f);
                 return filtered === types ? type : getUnionTypeFromSortedList(filtered, (<UnionType>type).objectFlags);
             }
+            if (isTypeInferredQuery(type)) {
+                const types = type.types;
+                const filtered = filter(types, f);
+                if (filtered !== types) {
+                    restrictInferredQuery(type, filtered);
+                }
+                return type;
+            }
             return type.flags & TypeFlags.Never || f(type) ? type : neverType;
         }
 
         function countTypes(type: Type) {
-            return type.flags & TypeFlags.Union ? (type as UnionType).types.length : 1;
+            return type.flags & TypeFlags.Union || isTypeInferredQuery(type) ? (type as UnionType | InferredQueryType).types.length : 1;
         }
 
         // Apply a mapping function to a type and return the resulting type. If the source type
@@ -25231,6 +25198,7 @@ namespace ts {
             }
         }
 
+        // TODO(inferred): Support array spread
         function checkSpreadExpression(node: SpreadElement, checkMode?: CheckMode): Type {
             if (languageVersion < ScriptTarget.ES2015) {
                 checkExternalEmitHelpers(node, compilerOptions.downlevelIteration ? ExternalEmitHelpers.SpreadIncludes : ExternalEmitHelpers.SpreadArrays);
@@ -26296,7 +26264,7 @@ namespace ts {
                 //   a super property access is permitted and must specify a public static member function of the base class.
                 if (languageVersion < ScriptTarget.ES2015) {
                     if (symbolHasNonMethodDeclaration(prop)) {
-                        error(errorNode, Diagnostics.Only_public_and_protected_methods_of_the_base_class_are_accessible_via_the_super_keyword);
+                        maybeSuspendError(() => error(errorNode, Diagnostics.Only_public_and_protected_methods_of_the_base_class_are_accessible_via_the_super_keyword));
                         return false;
                     }
                 }
@@ -26305,7 +26273,7 @@ namespace ts {
                     // This error could mask a private property access error. But, a member
                     // cannot simultaneously be private and abstract, so this will trigger an
                     // additional error elsewhere.
-                    error(errorNode, Diagnostics.Abstract_method_0_in_class_1_cannot_be_accessed_via_super_expression, symbolToString(prop), typeToString(getDeclaringClass(prop)!));
+                    maybeSuspendError(() => error(errorNode, Diagnostics.Abstract_method_0_in_class_1_cannot_be_accessed_via_super_expression, symbolToString(prop), typeToString(getDeclaringClass(prop)!)));
                     return false;
                 }
             }
@@ -26314,14 +26282,14 @@ namespace ts {
             if ((flags & ModifierFlags.Abstract) && isThisProperty(node) && symbolHasNonMethodDeclaration(prop)) {
                 const declaringClassDeclaration = getClassLikeDeclarationOfSymbol(getParentOfSymbol(prop)!);
                 if (declaringClassDeclaration && isNodeUsedDuringClassInitialization(node)) {
-                    error(errorNode, Diagnostics.Abstract_property_0_in_class_1_cannot_be_accessed_in_the_constructor, symbolToString(prop), getTextOfIdentifierOrLiteral(declaringClassDeclaration.name!)); // TODO: GH#18217
+                    maybeSuspendError(() => error(errorNode, Diagnostics.Abstract_property_0_in_class_1_cannot_be_accessed_in_the_constructor, symbolToString(prop), getTextOfIdentifierOrLiteral(declaringClassDeclaration.name!))); // TODO: GH#18217
                     return false;
                 }
             }
 
             if (isPropertyAccessExpression(node) && isPrivateIdentifier(node.name)) {
                 if (!getContainingClass(node)) {
-                    error(errorNode, Diagnostics.Private_identifiers_are_not_allowed_outside_class_bodies);
+                    maybeSuspendError(() => error(errorNode, Diagnostics.Private_identifiers_are_not_allowed_outside_class_bodies));
                     return false;
                 }
                 return true;
@@ -26338,7 +26306,7 @@ namespace ts {
             if (flags & ModifierFlags.Private) {
                 const declaringClassDeclaration = getClassLikeDeclarationOfSymbol(getParentOfSymbol(prop)!)!;
                 if (!isNodeWithinClass(node, declaringClassDeclaration)) {
-                    error(errorNode, Diagnostics.Property_0_is_private_and_only_accessible_within_class_1, symbolToString(prop), typeToString(getDeclaringClass(prop)!));
+                    maybeSuspendError(() => error(errorNode, Diagnostics.Property_0_is_private_and_only_accessible_within_class_1, symbolToString(prop), typeToString(getDeclaringClass(prop)!)));
                     return false;
                 }
                 return true;
@@ -26363,7 +26331,7 @@ namespace ts {
                 // static member access is disallow
                 let thisParameter: ParameterDeclaration | undefined;
                 if (flags & ModifierFlags.Static || !(thisParameter = getThisParameterFromNodeContext(node)) || !thisParameter.type) {
-                    error(errorNode, Diagnostics.Property_0_is_protected_and_only_accessible_within_class_1_and_its_subclasses, symbolToString(prop), typeToString(getDeclaringClass(prop) || type));
+                    maybeSuspendError(() => error(errorNode, Diagnostics.Property_0_is_protected_and_only_accessible_within_class_1_and_its_subclasses, symbolToString(prop), typeToString(getDeclaringClass(prop) || type)));
                     return false;
                 }
 
@@ -26379,7 +26347,7 @@ namespace ts {
                 type = (type as TypeParameter).isThisType ? getConstraintOfTypeParameter(<TypeParameter>type)! : getBaseConstraintOfType(<TypeParameter>type)!; // TODO: GH#18217 Use a different variable that's allowed to be undefined
             }
             if (!type || !hasBaseType(type, enclosingClass)) {
-                error(errorNode, Diagnostics.Property_0_is_protected_and_only_accessible_through_an_instance_of_class_1, symbolToString(prop), typeToString(enclosingClass));
+                maybeSuspendError(() => error(errorNode, Diagnostics.Property_0_is_protected_and_only_accessible_through_an_instance_of_class_1, symbolToString(prop), typeToString(enclosingClass!)));
                 return false;
             }
             return true;
@@ -26407,11 +26375,11 @@ namespace ts {
         }
 
         function reportObjectPossiblyNullOrUndefinedError(node: Node, flags: TypeFlags) {
-            maybeSuspendError(() => error(node, flags & TypeFlags.Undefined ? flags & TypeFlags.Null ?
+            error(node, flags & TypeFlags.Undefined ? flags & TypeFlags.Null ?
                 Diagnostics.Object_is_possibly_null_or_undefined :
                 Diagnostics.Object_is_possibly_undefined :
                 Diagnostics.Object_is_possibly_null
-            ));
+            );
         }
 
         function reportCannotInvokePossiblyNullOrUndefinedError(node: Node, flags: TypeFlags) {
@@ -26427,17 +26395,19 @@ namespace ts {
             node: Node,
             reportError: (node: Node, kind: TypeFlags) => void,
         ): Type {
-            if (strictNullChecks && type.flags & TypeFlags.Unknown) {
-                maybeSuspendError(() => error(node, Diagnostics.Object_is_of_type_unknown));
-                return errorType;
-            }
-            const kind = (strictNullChecks ? getFalsyFlags(type) : type.flags) & TypeFlags.Nullable;
-            if (kind) {
-                reportError(node, kind);
-                const t = getNonNullableType(type);
-                return t.flags & (TypeFlags.Nullable | TypeFlags.Never) ? errorType : t;
-            }
-            return type;
+            return createInferredTypeRule(type => {
+                if (strictNullChecks && type.flags & TypeFlags.Unknown) {
+                    maybeSuspendError(() => error(node, Diagnostics.Object_is_of_type_unknown));
+                    return errorType;
+                }
+                const kind = (strictNullChecks ? getFalsyFlags(type) : type.flags) & TypeFlags.Nullable;
+                if (kind) {
+                    maybeSuspendError(() => reportError(node, kind));
+                    const t = getNonNullableType(type);
+                    return t.flags & (TypeFlags.Nullable | TypeFlags.Never) ? errorType : t;
+                }
+                return type;
+            })(type);
         }
 
         function checkNonNullType(type: Type, node: Node) {
@@ -26447,7 +26417,7 @@ namespace ts {
         function checkNonNullNonVoidType(type: Type, node: Node): Type {
             const nonNullType = checkNonNullType(type, node);
             if (nonNullType !== errorType && nonNullType.flags & TypeFlags.Void) {
-                error(node, Diagnostics.Object_is_possibly_undefined);
+                maybeSuspendError(() => error(node, Diagnostics.Object_is_possibly_undefined));
             }
             return nonNullType;
         }
@@ -26491,6 +26461,7 @@ namespace ts {
             return getPropertyOfType(leftType, lexicallyScopedIdentifier.escapedName);
         }
 
+        // TODO(inferred): suspend errors here (or determine that this is never used for valid inferred usage, since it deals with class private fields)
         function checkPrivateIdentifierPropertyAccess(leftType: Type, right: PrivateIdentifier, lexicallyScopedIdentifier: Symbol | undefined): boolean {
             // Either the identifier could not be looked up in the lexical scope OR the lexically scoped identifier did not exist on the type.
             // Find a private identifier with the same description on the type.
@@ -26561,89 +26532,95 @@ namespace ts {
         function checkPropertyAccessExpressionOrQualifiedName(node: PropertyAccessExpression | QualifiedName, left: Expression | QualifiedName, leftType: Type, right: Identifier | PrivateIdentifier) {
             const parentSymbol = getNodeLinks(left).resolvedSymbol;
             const assignmentKind = getAssignmentTargetKind(node);
-            const apparentType = getApparentType(assignmentKind !== AssignmentKind.None || isMethodAccessForCall(node) ? getWidenedType(leftType) : leftType);
-            if (isPrivateIdentifier(right)) {
-                checkExternalEmitHelpers(node, ExternalEmitHelpers.ClassPrivateFieldGet);
-            }
-            const isAnyLike = isTypeAny(apparentType) || apparentType === silentNeverType;
-            let prop: Symbol | undefined;
-            if (isPrivateIdentifier(right)) {
-                const lexicallyScopedSymbol = lookupSymbolForPrivateIdentifierDeclaration(right.escapedText, right);
-                if (isAnyLike) {
-                    if (lexicallyScopedSymbol) {
+            return createInferredTypeRule(leftType => {
+                const apparentType = getApparentType(assignmentKind !== AssignmentKind.None || isMethodAccessForCall(node) ? getWidenedType(leftType) : leftType);
+                if (isPrivateIdentifier(right)) {
+                    checkExternalEmitHelpers(node, ExternalEmitHelpers.ClassPrivateFieldGet);
+                }
+                const isAnyLike = isTypeAny(apparentType) || apparentType === silentNeverType;
+                let prop: Symbol | undefined;
+                if (isPrivateIdentifier(right)) {
+                    const lexicallyScopedSymbol = lookupSymbolForPrivateIdentifierDeclaration(right.escapedText, right);
+                    if (isAnyLike) {
+                        if (lexicallyScopedSymbol) {
+                            return apparentType;
+                        }
+                        if (!getContainingClass(right)) {
+                            // this is a grammar error, which applies in all cases of types, so we don't supsend when checking
+                            // inferred query
+                            grammarErrorOnNode(right, Diagnostics.Private_identifiers_are_not_allowed_outside_class_bodies);
+                            return anyType;
+                        }
+                    }
+                    prop = lexicallyScopedSymbol ? getPrivateIdentifierPropertyOfType(leftType, lexicallyScopedSymbol) : undefined;
+                    // Check for private-identifier-specific shadowing and lexical-scoping errors.
+                    if (!prop && checkPrivateIdentifierPropertyAccess(leftType, right, lexicallyScopedSymbol)) {
+                        return errorType;
+                    }
+                }
+                else {
+                    if (isAnyLike) {
+                        if (isIdentifier(left) && parentSymbol) {
+                            markAliasReferenced(parentSymbol, node);
+                        }
                         return apparentType;
                     }
-                    if (!getContainingClass(right)) {
-                        grammarErrorOnNode(right, Diagnostics.Private_identifiers_are_not_allowed_outside_class_bodies);
-                        return anyType;
-                    }
+                    // TODO(inferred): check property access
+                    prop = getPropertyOfType(apparentType, right.escapedText);
+                            // addInferredQueryPropertyRestriction(getInferredQueryRestrictionForType(leftType), right.escapedText);
                 }
-                prop = lexicallyScopedSymbol ? getPrivateIdentifierPropertyOfType(leftType, lexicallyScopedSymbol) : undefined;
-                // Check for private-identifier-specific shadowing and lexical-scoping errors.
-                if (!prop && checkPrivateIdentifierPropertyAccess(leftType, right, lexicallyScopedSymbol)) {
-                    return errorType;
-                }
-            }
-            else {
-                if (isAnyLike) {
-                    if (isIdentifier(left) && parentSymbol) {
-                        markAliasReferenced(parentSymbol, node);
-                    }
-                    return apparentType;
-                }
-                // TODO(inferred): check property access
-                prop = getPropertyOfType(apparentType, right.escapedText);
-                        // addInferredQueryPropertyRestriction(getInferredQueryRestrictionForType(leftType), right.escapedText);
-            }
-            if (isIdentifier(left) && parentSymbol && !(prop && isConstEnumOrConstEnumOnlyModule(prop))) {
-                markAliasReferenced(parentSymbol, node);
-            }
-
-            let propType: Type;
-            if (!prop) {
-                const indexInfo = !isPrivateIdentifier(right) && (assignmentKind === AssignmentKind.None || !isGenericObjectType(leftType) || isThisTypeParameter(leftType)) ? getIndexInfoOfType(apparentType, IndexKind.String) : undefined;
-                if (!(indexInfo && indexInfo.type)) {
-                    if (isJSLiteralType(leftType)) {
-                        return anyType;
-                    }
-                    if (leftType.symbol === globalThisSymbol) {
-                        if (globalThisSymbol.exports!.has(right.escapedText) && (globalThisSymbol.exports!.get(right.escapedText)!.flags & SymbolFlags.BlockScoped)) {
-                            error(right, Diagnostics.Property_0_does_not_exist_on_type_1, unescapeLeadingUnderscores(right.escapedText), typeToString(leftType));
-                        }
-                        else if (noImplicitAny) {
-                            error(right, Diagnostics.Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature, typeToString(leftType));
-                        }
-                        return anyType;
-                    }
-                    if (right.escapedText && !checkAndReportErrorForExtendingInterface(node)) {
-                        reportNonexistentProperty(right, isThisTypeParameter(leftType) ? apparentType : leftType);
-                    }
-                    return errorType;
-                }
-                if (indexInfo.isReadonly && (isAssignmentTarget(node) || isDeleteTarget(node))) {
-                    error(node, Diagnostics.Index_signature_in_type_0_only_permits_reading, typeToString(apparentType));
+                if (isIdentifier(left) && parentSymbol && !(prop && isConstEnumOrConstEnumOnlyModule(prop))) {
+                    markAliasReferenced(parentSymbol, node);
                 }
 
-                propType = (compilerOptions.noUncheckedIndexedAccess && !isAssignmentTarget(node)) ? getUnionType([indexInfo.type, undefinedType]) : indexInfo.type;
-                if (compilerOptions.noPropertyAccessFromIndexSignature && isPropertyAccessExpression(node)) {
-                    error(node, Diagnostics.Property_0_comes_from_an_index_signature_so_it_must_be_accessed_with_0, unescapeLeadingUnderscores(right.escapedText));
+                let propType: Type;
+                if (!prop) {
+                    const indexInfo = !isPrivateIdentifier(right) && (assignmentKind === AssignmentKind.None || !isGenericObjectType(leftType) || isThisTypeParameter(leftType)) ? getIndexInfoOfType(apparentType, IndexKind.String) : undefined;
+                    if (!(indexInfo && indexInfo.type)) {
+                        if (isJSLiteralType(leftType)) {
+                            return anyType;
+                        }
+                        if (leftType.symbol === globalThisSymbol) {
+                            if (globalThisSymbol.exports!.has(right.escapedText) && (globalThisSymbol.exports!.get(right.escapedText)!.flags & SymbolFlags.BlockScoped)) {
+                                maybeSuspendError(() => error(right, Diagnostics.Property_0_does_not_exist_on_type_1, unescapeLeadingUnderscores(right.escapedText), typeToString(leftType)));
+                            }
+                            else if (noImplicitAny) {
+                                maybeSuspendError(() => error(right, Diagnostics.Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature, typeToString(leftType)));
+                            }
+                            return anyType;
+                        }
+                        if (right.escapedText && !checkAndReportErrorForExtendingInterface(node)) {
+                            maybeSuspendError(() => reportNonexistentProperty(right, isThisTypeParameter(leftType) ? apparentType : leftType));
+                        }
+                        return errorType;
+                    }
+                    if (indexInfo.isReadonly && (isAssignmentTarget(node) || isDeleteTarget(node))) {
+                        maybeSuspendError(() => error(node, Diagnostics.Index_signature_in_type_0_only_permits_reading, typeToString(apparentType)));
+                    }
+
+                    propType = (compilerOptions.noUncheckedIndexedAccess && !isAssignmentTarget(node)) ? getUnionType([indexInfo.type, undefinedType]) : indexInfo.type;
+                    if (compilerOptions.noPropertyAccessFromIndexSignature && isPropertyAccessExpression(node)) {
+                        maybeSuspendError(() => error(node, Diagnostics.Property_0_comes_from_an_index_signature_so_it_must_be_accessed_with_0, unescapeLeadingUnderscores(right.escapedText)));
+                    }
                 }
-            }
-            else {
-                if (getDeclarationNodeFlagsFromSymbol(prop) & NodeFlags.Deprecated && isUncalledFunctionReference(node, prop)) {
-                    errorOrSuggestion(/* isError */ false, right, Diagnostics._0_is_deprecated, right.escapedText as string);
+                else {
+                    if (getDeclarationNodeFlagsFromSymbol(prop) & NodeFlags.Deprecated && isUncalledFunctionReference(node, prop)) {
+                        if (!globalErrorContainer) {
+                            errorOrSuggestion(/* isError */ false, right, Diagnostics._0_is_deprecated, right.escapedText as string);
+                        }
+                    }
+                    checkPropertyNotUsedBeforeDeclaration(prop, node, right);
+                    markPropertyAsReferenced(prop, node, left.kind === SyntaxKind.ThisKeyword);
+                    getNodeLinks(node).resolvedSymbol = prop;
+                    checkPropertyAccessibility(node, left.kind === SyntaxKind.SuperKeyword, apparentType, prop);
+                    if (isAssignmentToReadonlyEntity(node as Expression, prop, assignmentKind)) {
+                        maybeSuspendError(() => error(right, Diagnostics.Cannot_assign_to_0_because_it_is_a_read_only_property, idText(right)));
+                        return errorType;
+                    }
+                    propType = isThisPropertyAccessInConstructor(node, prop) ? autoType : getConstraintForLocation(getTypeOfSymbol(prop), node);
                 }
-                checkPropertyNotUsedBeforeDeclaration(prop, node, right);
-                markPropertyAsReferenced(prop, node, left.kind === SyntaxKind.ThisKeyword);
-                getNodeLinks(node).resolvedSymbol = prop;
-                checkPropertyAccessibility(node, left.kind === SyntaxKind.SuperKeyword, apparentType, prop);
-                if (isAssignmentToReadonlyEntity(node as Expression, prop, assignmentKind)) {
-                    error(right, Diagnostics.Cannot_assign_to_0_because_it_is_a_read_only_property, idText(right));
-                    return errorType;
-                }
-                propType = isThisPropertyAccessInConstructor(node, prop) ? autoType : getConstraintForLocation(getTypeOfSymbol(prop), node);
-            }
-            return getFlowTypeOfAccessExpression(node, prop, propType, right);
+                return getFlowTypeOfAccessExpression(node, prop, propType, right);
+            })(leftType);
         }
 
         function getFlowTypeOfAccessExpression(node: ElementAccessExpression | PropertyAccessExpression | QualifiedName, prop: Symbol | undefined, propType: Type, errorNode: Node) {
@@ -26681,7 +26658,7 @@ namespace ts {
             }
             const flowType = getFlowTypeOfReference(node, propType, assumeUninitialized ? getOptionalType(propType) : propType);
             if (assumeUninitialized && !(getFalsyFlags(propType) & TypeFlags.Undefined) && getFalsyFlags(flowType) & TypeFlags.Undefined) {
-                error(errorNode, Diagnostics.Property_0_is_used_before_being_assigned, symbolToString(prop!)); // TODO: GH#18217
+                maybeSuspendError(() => error(errorNode, Diagnostics.Property_0_is_used_before_being_assigned, symbolToString(prop!))); // TODO: GH#18217
                 // Return the declared type to reduce follow-on errors
                 return propType;
             }
@@ -26694,26 +26671,28 @@ namespace ts {
                 return;
             }
 
-            let diagnosticMessage;
+            let diagnosticMessage: Diagnostic | undefined;
             const declarationName = idText(right);
             if (isInPropertyInitializer(node)
                 && !(isAccessExpression(node) && isAccessExpression(node.expression))
                 && !isBlockScopedNameDeclaredBeforeUse(valueDeclaration, right)
                 && !isPropertyDeclaredInAncestorClass(prop)) {
-                diagnosticMessage = error(right, Diagnostics.Property_0_is_used_before_its_initialization, declarationName);
+                maybeSuspendError(() => diagnosticMessage = error(right, Diagnostics.Property_0_is_used_before_its_initialization, declarationName));
             }
             else if (valueDeclaration.kind === SyntaxKind.ClassDeclaration &&
                 node.parent.kind !== SyntaxKind.TypeReference &&
                 !(valueDeclaration.flags & NodeFlags.Ambient) &&
                 !isBlockScopedNameDeclaredBeforeUse(valueDeclaration, right)) {
-                diagnosticMessage = error(right, Diagnostics.Class_0_used_before_its_declaration, declarationName);
+                maybeSuspendError(() => diagnosticMessage = error(right, Diagnostics.Class_0_used_before_its_declaration, declarationName));
             }
 
-            if (diagnosticMessage) {
-                addRelatedInfo(diagnosticMessage,
-                    createDiagnosticForNode(valueDeclaration, Diagnostics._0_is_declared_here, declarationName)
-                );
-            }
+            maybeSuspendError(() => {
+                if (diagnosticMessage) {
+                    addRelatedInfo(diagnosticMessage,
+                        createDiagnosticForNode(valueDeclaration, Diagnostics._0_is_declared_here, declarationName)
+                    );
+                }
+            });
         }
 
         function isInPropertyInitializer(node: Node): boolean {
@@ -27108,8 +27087,18 @@ namespace ts {
             const accessFlags = isAssignmentTarget(node) ?
                 AccessFlags.Writing | (isGenericObjectType(objectType) && !isThisTypeParameter(objectType) ? AccessFlags.NoIndexSignatures : 0) :
                 AccessFlags.None;
-            const indexedAccessType = getIndexedAccessTypeOrUndefined(objectType, effectiveIndexType, /*noUncheckedIndexedAccessCandidate*/ undefined, node, accessFlags | AccessFlags.ExpressionPosition) || errorType;
-            return checkIndexedAccessIndexType(getFlowTypeOfAccessExpression(node, indexedAccessType.symbol, indexedAccessType, indexExpression), node);
+            const possibleIndexedAccessTypes = getPossibleIndexedAccessTypes(undefined, node, accessFlags | AccessFlags.ExpressionPosition)(objectType, effectiveIndexType);
+            // we have a set of possible results given possibilities for the input types
+            // we reduce the set further by running the outputs through the checkIndexedAccessIndexType and the getFlowTypeOfAccessExpression functions
+            const possibleCheckedIndexAccessTypes = possibleIndexedAccessTypes.reduce((acc, { input, output: indexedAccessType }) => {
+                const output = withNewErrorContainer(() => checkIndexedAccessIndexType(getFlowTypeOfAccessExpression(node, indexedAccessType.symbol, indexedAccessType, indexExpression), node))();
+                if (output[1].length === 0) {
+                    acc.push({ input, output: output[0], valid: true });
+                }
+                return acc;
+            }, [] as TypeRuleResults<[objectType: Type, effectiveIndexType: Type]>);
+
+            return handleTypeRuleResults(possibleCheckedIndexAccessTypes, [objectType, effectiveIndexType]);
         }
 
         function checkThatExpressionIsProperSymbolReference(expression: Expression, expressionType: Type, reportError: boolean): boolean {
@@ -29445,17 +29434,26 @@ namespace ts {
             exprType = getRegularTypeOfObjectLiteral(getBaseTypeOfLiteralType(exprType));
             const targetType = getTypeFromTypeNode(type);
             if (produceDiagnostics && targetType !== errorType) {
-                const widenedType = getWidenedType(exprType);
-                if (!isTypeComparableTo(targetType, widenedType)) {
-                    checkTypeComparableTo(exprType, targetType, errNode,
-                        Diagnostics.Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the_other_If_this_was_intentional_convert_the_expression_to_unknown_first);
+                if (isTypeInferredQuery(exprType) && !restrictInferredQuery(exprType, targetType)) {
+                    error(
+                        errNode,
+                        Diagnostics.Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the_other_If_this_was_intentional_convert_the_expression_to_unknown_first,
+                        typeToString(exprType),
+                        typeToString(targetType),
+                    );
+                }
+                else {
+                    const widenedType = getWidenedType(exprType);
+                    if (!isTypeComparableTo(targetType, widenedType)) {
+                        checkTypeComparableTo(exprType, targetType, errNode,
+                            Diagnostics.Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the_other_If_this_was_intentional_convert_the_expression_to_unknown_first);
+                    }
                 }
             }
-            // TODO(inferred): assertion on inferred query should also reduce the expression
-            restrictInferredQuery(exprType, targetType);
             return targetType;
         }
 
+        // TODO(inferred): figure out how this
         function checkNonNullChain(node: NonNullChain) {
             const leftType = checkExpression(node.expression);
             const nonOptionalType = getOptionalExpressionType(leftType, node.expression);
@@ -30402,6 +30400,8 @@ namespace ts {
             return true;
         }
 
+        // we don't need to change this for inferred, since the access expression
+        // requirement will already reduce the possibilites
         function checkDeleteExpression(node: DeleteExpression): Type {
             checkExpression(node.expression);
             const expr = skipParentheses(node.expression);
@@ -30492,82 +30492,92 @@ namespace ts {
             return awaitedType;
         }
 
-        function checkPrefixUnaryExpression(node: PrefixUnaryExpression): Type {
-            const operandType = checkExpression(node.operand);
-            if (operandType === silentNeverType) {
-                return silentNeverType;
-            }
-            switch (node.operand.kind) {
-                case SyntaxKind.NumericLiteral:
-                    switch (node.operator) {
-                        case SyntaxKind.MinusToken:
-                            return getFreshTypeOfLiteralType(getLiteralType(-(node.operand as NumericLiteral).text));
-                        case SyntaxKind.PlusToken:
-                            return getFreshTypeOfLiteralType(getLiteralType(+(node.operand as NumericLiteral).text));
-                    }
-                    break;
-                case SyntaxKind.BigIntLiteral:
-                    if (node.operator === SyntaxKind.MinusToken) {
-                        return getFreshTypeOfLiteralType(getLiteralType({
-                            negative: true,
-                            base10Value: parsePseudoBigInt((node.operand as BigIntLiteral).text)
-                        }));
-                    }
-            }
-            switch (node.operator) {
-                case SyntaxKind.PlusToken:
-                case SyntaxKind.MinusToken:
-                case SyntaxKind.TildeToken:
-                    checkNonNullType(operandType, node.operand);
-                    if (maybeTypeOfKind(operandType, TypeFlags.ESSymbolLike)) {
-                        error(node.operand, Diagnostics.The_0_operator_cannot_be_applied_to_type_symbol, tokenToString(node.operator));
-                    }
-                    if (node.operator === SyntaxKind.PlusToken) {
-                        if (maybeTypeOfKind(operandType, TypeFlags.BigIntLike)) {
-                            error(node.operand, Diagnostics.Operator_0_cannot_be_applied_to_type_1, tokenToString(node.operator), typeToString(getBaseTypeOfLiteralType(operandType)));
+        function prefixUnaryExpressionRule(node: PrefixUnaryExpression): (operandType: Type) => Type {
+            return createInferredTypeRule(operandType => {
+                if (operandType === silentNeverType) {
+                    return silentNeverType;
+                }
+                switch (node.operand.kind) {
+                    case SyntaxKind.NumericLiteral:
+                        switch (node.operator) {
+                            case SyntaxKind.MinusToken:
+                                return getFreshTypeOfLiteralType(getLiteralType(-(node.operand as NumericLiteral).text));
+                            case SyntaxKind.PlusToken:
+                                return getFreshTypeOfLiteralType(getLiteralType(+(node.operand as NumericLiteral).text));
                         }
-                        return numberType;
-                    }
-                    return getUnaryResultType(operandType);
-                case SyntaxKind.ExclamationToken:
-                    checkTruthinessExpression(node.operand);
-                    const facts = getTypeFacts(operandType) & (TypeFacts.Truthy | TypeFacts.Falsy);
-                    return facts === TypeFacts.Truthy ? falseType :
-                        facts === TypeFacts.Falsy ? trueType :
-                        booleanType;
-                case SyntaxKind.PlusPlusToken:
-                case SyntaxKind.MinusMinusToken:
-                    const ok = checkArithmeticOperandType(node.operand, checkNonNullType(operandType, node.operand),
-                        Diagnostics.An_arithmetic_operand_must_be_of_type_any_number_bigint_or_an_enum_type);
-                    if (ok) {
-                        // run check only if former checks succeeded to avoid reporting cascading errors
-                        checkReferenceExpression(
-                            node.operand,
-                            Diagnostics.The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access,
-                            Diagnostics.The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access);
-                    }
-                    return getUnaryResultType(operandType);
-            }
-            return errorType;
+                        break;
+                    case SyntaxKind.BigIntLiteral:
+                        if (node.operator === SyntaxKind.MinusToken) {
+                            return getFreshTypeOfLiteralType(getLiteralType({
+                                negative: true,
+                                base10Value: parsePseudoBigInt((node.operand as BigIntLiteral).text)
+                            }));
+                        }
+                }
+                switch (node.operator) {
+                    case SyntaxKind.PlusToken:
+                    case SyntaxKind.MinusToken:
+                    case SyntaxKind.TildeToken:
+                        checkNonNullType(operandType, node.operand);
+                        if (maybeTypeOfKind(operandType, TypeFlags.ESSymbolLike)) {
+                            maybeSuspendError(() => error(node.operand, Diagnostics.The_0_operator_cannot_be_applied_to_type_symbol, tokenToString(node.operator)));
+                        }
+                        if (node.operator === SyntaxKind.PlusToken) {
+                            if (maybeTypeOfKind(operandType, TypeFlags.BigIntLike)) {
+                                maybeSuspendError(() => error(node.operand, Diagnostics.Operator_0_cannot_be_applied_to_type_1, tokenToString(node.operator), typeToString(getBaseTypeOfLiteralType(operandType))));
+                            }
+                            return numberType;
+                        }
+                        return getUnaryResultType(operandType);
+                    case SyntaxKind.ExclamationToken:
+                        checkTruthinessExpression(node.operand);
+                        const facts = getTypeFacts(operandType) & (TypeFacts.Truthy | TypeFacts.Falsy);
+                        return facts === TypeFacts.Truthy ? falseType :
+                            facts === TypeFacts.Falsy ? trueType :
+                            booleanType;
+                    case SyntaxKind.PlusPlusToken:
+                    case SyntaxKind.MinusMinusToken:
+                        const ok = checkArithmeticOperandType(node.operand, checkNonNullType(operandType, node.operand),
+                            Diagnostics.An_arithmetic_operand_must_be_of_type_any_number_bigint_or_an_enum_type);
+                        if (ok) {
+                            // run check only if former checks succeeded to avoid reporting cascading errors
+                            checkReferenceExpression(
+                                node.operand,
+                                Diagnostics.The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access,
+                                Diagnostics.The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access);
+                        }
+                        return getUnaryResultType(operandType);
+                }
+                return errorType;
+            });
+        }
+
+        function checkPrefixUnaryExpression(node: PrefixUnaryExpression): Type {
+            return prefixUnaryExpressionRule(node)(checkExpression(node.operand));
+        }
+
+        function postfixUnaryExpressionRule(node: PostfixUnaryExpression): (operandType: Type) => Type {
+            return createInferredTypeRule(operandType => {
+                if (operandType === silentNeverType) {
+                    return silentNeverType;
+                }
+                const ok = checkArithmeticOperandType(
+                    node.operand,
+                    checkNonNullType(operandType, node.operand),
+                    Diagnostics.An_arithmetic_operand_must_be_of_type_any_number_bigint_or_an_enum_type);
+                if (ok) {
+                    // run check only if former checks succeeded to avoid reporting cascading errors
+                    checkReferenceExpression(
+                        node.operand,
+                        Diagnostics.The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access,
+                        Diagnostics.The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access);
+                }
+                return getUnaryResultType(operandType);
+            });
         }
 
         function checkPostfixUnaryExpression(node: PostfixUnaryExpression): Type {
-            const operandType = checkExpression(node.operand);
-            if (operandType === silentNeverType) {
-                return silentNeverType;
-            }
-            const ok = checkArithmeticOperandType(
-                node.operand,
-                checkNonNullType(operandType, node.operand),
-                Diagnostics.An_arithmetic_operand_must_be_of_type_any_number_bigint_or_an_enum_type);
-            if (ok) {
-                // run check only if former checks succeeded to avoid reporting cascading errors
-                checkReferenceExpression(
-                    node.operand,
-                    Diagnostics.The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access,
-                    Diagnostics.The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access);
-            }
-            return getUnaryResultType(operandType);
+            return postfixUnaryExpressionRule(node)(checkExpression(node.operand));
         }
 
         function getUnaryResultType(operandType: Type): Type {
@@ -30576,9 +30586,6 @@ namespace ts {
                     ? numberOrBigIntType
                     : bigintType;
             }
-            // TODO(inferred): add a restriction to the type if it is inferred
-            // addInferredQueryRestriction(getInferredQueryRestrictionForType(operandType), numberType);
-            // If it's not a bigint type, implicit coercion will result in a number
             return numberType;
         }
 
@@ -30588,8 +30595,8 @@ namespace ts {
             if (type.flags & kind) {
                 return true;
             }
-            if (type.flags & TypeFlags.UnionOrIntersection) {
-                const types = (<UnionOrIntersectionType>type).types;
+            if (type.flags & TypeFlags.UnionOrIntersection || isTypeInferredQuery(type)) {
+                const types = (type as UnionOrIntersectionType | InferredQueryType).types;
                 for (const t of types) {
                     if (maybeTypeOfKind(t, kind)) {
                         return true;
@@ -30600,28 +30607,34 @@ namespace ts {
         }
 
         function isTypeAssignableToKind(source: Type, kind: TypeFlags, strict?: boolean): boolean {
-            if (source.flags & kind) {
-                return true;
-            }
-            if (strict && source.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Void | TypeFlags.Undefined | TypeFlags.Null)) {
-                return false;
-            }
-            return !!(kind & TypeFlags.NumberLike) && isTypeAssignableTo(source, numberType) ||
-                !!(kind & TypeFlags.BigIntLike) && isTypeAssignableTo(source, bigintType) ||
-                !!(kind & TypeFlags.StringLike) && isTypeAssignableTo(source, stringType) ||
-                !!(kind & TypeFlags.BooleanLike) && isTypeAssignableTo(source, booleanType) ||
-                !!(kind & TypeFlags.Void) && isTypeAssignableTo(source, voidType) ||
-                !!(kind & TypeFlags.Never) && isTypeAssignableTo(source, neverType) ||
-                !!(kind & TypeFlags.Null) && isTypeAssignableTo(source, nullType) ||
-                !!(kind & TypeFlags.Undefined) && isTypeAssignableTo(source, undefinedType) ||
-                !!(kind & TypeFlags.ESSymbol) && isTypeAssignableTo(source, esSymbolType) ||
-                !!(kind & TypeFlags.NonPrimitive) && isTypeAssignableTo(source, nonPrimitiveType) ||
-                !!(kind & TypeFlags.Inferred) && isTypeAssignableTo(source, globalJsonType);
+            const results = withEveryTypePossibility(source => {
+                if (source.flags & kind) {
+                    return true;
+                }
+                if (strict && source.flags & (TypeFlags.AnyOrUnknown | TypeFlags.Void | TypeFlags.Undefined | TypeFlags.Null)) {
+                    return false;
+                }
+                return !!(kind & TypeFlags.NumberLike) && isTypeAssignableTo(source, numberType) ||
+                    !!(kind & TypeFlags.BigIntLike) && isTypeAssignableTo(source, bigintType) ||
+                    !!(kind & TypeFlags.StringLike) && isTypeAssignableTo(source, stringType) ||
+                    !!(kind & TypeFlags.BooleanLike) && isTypeAssignableTo(source, booleanType) ||
+                    !!(kind & TypeFlags.Void) && isTypeAssignableTo(source, voidType) ||
+                    !!(kind & TypeFlags.Never) && isTypeAssignableTo(source, neverType) ||
+                    !!(kind & TypeFlags.Null) && isTypeAssignableTo(source, nullType) ||
+                    !!(kind & TypeFlags.Undefined) && isTypeAssignableTo(source, undefinedType) ||
+                    !!(kind & TypeFlags.ESSymbol) && isTypeAssignableTo(source, esSymbolType) ||
+                    !!(kind & TypeFlags.NonPrimitive) && isTypeAssignableTo(source, nonPrimitiveType) ||
+                    !!(kind & TypeFlags.Inferred) && isTypeAssignableTo(source, globalJsonType);
+            })(source);
+            // since inferred is the only kind of type that has multiple possibilities
+            // and we treat it as being any one of those possibilities until something reduces it,
+            // this means that an inferred type is assignable to a kind if any of its possibilities is assignable
+            return some(results, identity);
         }
 
         function allTypesAssignableToKind(source: Type, kind: TypeFlags, strict?: boolean): boolean {
-            return source.flags & TypeFlags.Union ?
-                every((source as UnionType).types, subType => allTypesAssignableToKind(subType, kind, strict)) :
+            return source.flags & TypeFlags.Union || isTypeInferredQuery(source) ?
+                every((source as UnionType | InferredQueryType).types, subType => allTypesAssignableToKind(subType, kind, strict)) :
                 isTypeAssignableToKind(source, kind, strict);
         }
 
@@ -30633,47 +30646,48 @@ namespace ts {
             return (symbol.flags & SymbolFlags.ConstEnum) !== 0;
         }
 
-        function checkInstanceOfExpression(left: Expression, right: Expression, leftType: Type, rightType: Type): Type {
-            if (leftType === silentNeverType || rightType === silentNeverType) {
-                return silentNeverType;
-            }
-            // TypeScript 1.0 spec (April 2014): 4.15.4
-            // The instanceof operator requires the left operand to be of type Any, an object type, or a type parameter type,
-            // and the right operand to be of type Any, a subtype of the 'Function' interface type, or have a call or construct signature.
-            // The result is always of the Boolean primitive type.
-            // NOTE: do not raise error if leftType is unknown as related error was already reported
-            if (!isTypeAny(leftType) &&
-                allTypesAssignableToKind(leftType, TypeFlags.Primitive)) {
-                error(left, Diagnostics.The_left_hand_side_of_an_instanceof_expression_must_be_of_type_any_an_object_type_or_a_type_parameter);
-            }
-            // NOTE: do not raise error if right is unknown as related error was already reported
-            if (!(isTypeAny(rightType) || typeHasCallOrConstructSignatures(rightType) || isTypeSubtypeOf(rightType, globalFunctionType))) {
-                error(right, Diagnostics.The_right_hand_side_of_an_instanceof_expression_must_be_of_type_any_or_of_a_type_assignable_to_the_Function_interface_type);
-            }
-            return booleanType;
+        function checkInstanceOfExpression(left: Expression, right: Expression): (leftType: Type, rightType: Type) => Type {
+            return createInferredTypeRule((leftType, rightType) => {
+                if (leftType === silentNeverType || rightType === silentNeverType) {
+                    return silentNeverType;
+                }
+                // TypeScript 1.0 spec (April 2014): 4.15.4
+                // The instanceof operator requires the left operand to be of type Any, an object type, or a type parameter type,
+                // and the right operand to be of type Any, a subtype of the 'Function' interface type, or have a call or construct signature.
+                // The result is always of the Boolean primitive type.
+                // NOTE: do not raise error if leftType is unknown as related error was already reported
+                if (!isTypeAny(leftType) &&
+                    allTypesAssignableToKind(leftType, TypeFlags.Primitive)) {
+                    maybeSuspendError(() => error(left, Diagnostics.The_left_hand_side_of_an_instanceof_expression_must_be_of_type_any_an_object_type_or_a_type_parameter));
+                }
+                // NOTE: do not raise error if right is unknown as related error was already reported
+                if (!(isTypeAny(rightType) || typeHasCallOrConstructSignatures(rightType) || isTypeSubtypeOf(rightType, globalFunctionType))) {
+                    maybeSuspendError(() => error(right, Diagnostics.The_right_hand_side_of_an_instanceof_expression_must_be_of_type_any_or_of_a_type_assignable_to_the_Function_interface_type));
+                }
+                return booleanType;
+            });
         }
 
-        // TODO(inferred): support in expression
-        function checkInExpression(left: Expression, right: Expression, leftType: Type, rightType: Type): Type {
-            if (leftType === silentNeverType || rightType === silentNeverType) {
-                return silentNeverType;
-            }
-            leftType = checkNonNullType(leftType, left);
-            rightType = checkNonNullType(rightType, right);
-            // TypeScript 1.0 spec (April 2014): 4.15.5
-            // The in operator requires the left operand to be of type Any, the String primitive type, or the Number primitive type,
-            // and the right operand to be of type Any, an object type, or a type parameter type.
-            // The result is always of the Boolean primitive type.
-            if (!(allTypesAssignableToKind(leftType, TypeFlags.StringLike | TypeFlags.NumberLike | TypeFlags.ESSymbolLike) ||
-                  isTypeAssignableToKind(leftType, TypeFlags.Index | TypeFlags.TemplateLiteral | TypeFlags.StringMapping | TypeFlags.TypeParameter))) {
-                error(left, Diagnostics.The_left_hand_side_of_an_in_expression_must_be_of_type_any_string_number_or_symbol);
-            }
-            restrictInferredQuery(leftType, [stringType, numberType]);
-            if (!allTypesAssignableToKind(rightType, TypeFlags.NonPrimitive | TypeFlags.InstantiableNonPrimitive)) {
-                error(right, Diagnostics.The_right_hand_side_of_an_in_expression_must_be_of_type_any_an_object_type_or_a_type_parameter);
-            }
-            // addInferredQueryRestriction(getInferredQueryRestrictionForType(rightType), nonPrimitiveType);
-            return booleanType;
+        function checkInExpression(left: Expression, right: Expression): (leftType: Type, rightType: Type) => Type {
+            return createInferredTypeRule((leftType, rightType) => {
+                if (leftType === silentNeverType || rightType === silentNeverType) {
+                    return silentNeverType;
+                }
+                leftType = checkNonNullType(leftType, left);
+                rightType = checkNonNullType(rightType, right);
+                // TypeScript 1.0 spec (April 2014): 4.15.5
+                // The in operator requires the left operand to be of type Any, the String primitive type, or the Number primitive type,
+                // and the right operand to be of type Any, an object type, or a type parameter type.
+                // The result is always of the Boolean primitive type.
+                if (!(allTypesAssignableToKind(leftType, TypeFlags.StringLike | TypeFlags.NumberLike | TypeFlags.ESSymbolLike) ||
+                    isTypeAssignableToKind(leftType, TypeFlags.Index | TypeFlags.TemplateLiteral | TypeFlags.StringMapping | TypeFlags.TypeParameter))) {
+                    maybeSuspendError(() => error(left, Diagnostics.The_left_hand_side_of_an_in_expression_must_be_of_type_any_string_number_or_symbol));
+                }
+                if (!allTypesAssignableToKind(rightType, TypeFlags.NonPrimitive | TypeFlags.InstantiableNonPrimitive)) {
+                    maybeSuspendError(() => error(right, Diagnostics.The_right_hand_side_of_an_in_expression_must_be_of_type_any_an_object_type_or_a_type_parameter));
+                }
+                return booleanType;
+            });
         }
 
         function checkObjectLiteralAssignment(node: ObjectLiteralExpression, sourceType: Type, rightIsThis?: boolean): Type {
@@ -31215,13 +31229,14 @@ namespace ts {
                 case SyntaxKind.ExclamationEqualsToken:
                 case SyntaxKind.EqualsEqualsEqualsToken:
                 case SyntaxKind.ExclamationEqualsEqualsToken:
-                    reportOperatorErrorUnless((left, right) => isTypeEqualityComparableTo(left, right) || isTypeEqualityComparableTo(right, left), leftType, rightType);
-                    return booleanType;
-
+                    return createInferredTypeRule((leftType: Type, rightType: Type) => {
+                        reportOperatorErrorUnless((left, right) => isTypeEqualityComparableTo(left, right) || isTypeEqualityComparableTo(right, left), leftType, rightType);
+                        return booleanType;
+                    })(leftType, rightType);
                 case SyntaxKind.InstanceOfKeyword:
-                    return checkInstanceOfExpression(left, right, leftType, rightType);
+                    return checkInstanceOfExpression(left, right)(leftType, rightType);
                 case SyntaxKind.InKeyword:
-                    return checkInExpression(left, right, leftType, rightType);
+                    return checkInExpression(left, right)(leftType, rightType);
                 // TODO(inferred): handle expressions that change the type like && || ??
                 case SyntaxKind.AmpersandAmpersandToken:
                 case SyntaxKind.AmpersandAmpersandEqualsToken: {
@@ -32841,7 +32856,7 @@ namespace ts {
             if (isTypeAssignableTo(indexType, getIndexType(objectType, /*stringsOnly*/ false))) {
                 if (accessNode.kind === SyntaxKind.ElementAccessExpression && isAssignmentTarget(accessNode) &&
                     getObjectFlags(objectType) & ObjectFlags.Mapped && getMappedTypeModifiers(<MappedType>objectType) & MappedTypeModifiers.IncludeReadonly) {
-                    error(accessNode, Diagnostics.Index_signature_in_type_0_only_permits_reading, typeToString(objectType));
+                    maybeSuspendError(() => error(accessNode, Diagnostics.Index_signature_in_type_0_only_permits_reading, typeToString(objectType)));
                 }
                 return type;
             }
@@ -32856,12 +32871,12 @@ namespace ts {
                 if (propertyName) {
                     const propertySymbol = forEachType(apparentObjectType, t => getPropertyOfType(t, propertyName));
                     if (propertySymbol && getDeclarationModifierFlagsFromSymbol(propertySymbol) & ModifierFlags.NonPublicAccessibilityModifier) {
-                        error(accessNode, Diagnostics.Private_or_protected_member_0_cannot_be_accessed_on_a_type_parameter, unescapeLeadingUnderscores(propertyName));
+                        maybeSuspendError(() => error(accessNode, Diagnostics.Private_or_protected_member_0_cannot_be_accessed_on_a_type_parameter, unescapeLeadingUnderscores(propertyName)));
                         return errorType;
                     }
                 }
             }
-            error(accessNode, Diagnostics.Type_0_cannot_be_used_to_index_type_1, typeToString(indexType), typeToString(objectType));
+            maybeSuspendError(() => error(accessNode, Diagnostics.Type_0_cannot_be_used_to_index_type_1, typeToString(indexType), typeToString(objectType)));
             return errorType;
         }
 
@@ -34899,7 +34914,7 @@ namespace ts {
 
         function checkTruthinessOfType(type: Type, node: Node) {
             if (type.flags & TypeFlags.Void) {
-                error(node, Diagnostics.An_expression_of_type_void_cannot_be_tested_for_truthiness);
+                maybeSuspendError(() => error(node, Diagnostics.An_expression_of_type_void_cannot_be_tested_for_truthiness));
             }
             return type;
         }
@@ -39606,7 +39621,7 @@ namespace ts {
                                 const name = getHelperName(helper);
                                 const symbol = getSymbol(helpersModule.exports!, escapeLeadingUnderscores(name), SymbolFlags.Value);
                                 if (!symbol) {
-                                    error(location, Diagnostics.This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_version_of_0, externalHelpersModuleNameText, name);
+                                    maybeSuspendError(() => error(location, Diagnostics.This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_version_of_0, externalHelpersModuleNameText, name));
                                 }
                             }
                         }
