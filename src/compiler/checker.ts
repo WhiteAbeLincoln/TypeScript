@@ -1337,8 +1337,8 @@ namespace ts {
         }
 
         function intersectTypePossibilities(typeX: Type | Type[], typeY: Type | Type[]): Type[] {
-            const xs = Array.isArray(typeX) ? typeX : getTypePossibilities(typeX);
-            const ys = Array.isArray(typeY) ? typeY : getTypePossibilities(typeY);
+            const xs = getTypePossibilities(typeX);
+            const ys = getTypePossibilities(typeY);
             // the intersection of two sets of types
             // e.g. we have xs=[string, number], ys=[string] => [string]
             // we remove all types that don't have a common supertype (excluding any)
@@ -1363,16 +1363,25 @@ namespace ts {
                     }
                 }
             }
-            return newSet.map(([,,result]) => result);
+            return deduplicate(newSet.map(([,,result]) => result), (x, y) => x.id !== y.id);
         }
 
         // function unionTypePossibilities(xs: Type[], ys: Type[]): Type[] {
         // }
 
-        function getTypePossibilities(type: Type): Type[] {
+        function getTypePossibilities(type: Type | Type[]): Type[] {
+            if (Array.isArray(type)) return type;
             if (!isTypeInferredQuery(type)) return [type];
             return type.types;
         }
+
+        // gets the union of two type possibility sets
+        // function extendTypePossibilities(type1: Type | Type[], type2: Type | Type[]) {
+        //     const poss1 = getTypePossibilities(type1);
+        //     const poss2 = getTypePossibilities(type2);
+        //     // TODO(inferred): should there be more logic in this, like with intersection
+        //     return deduplicate([...poss1, ...poss2], (x, y) => x.id === y.id);
+        // }
 
         /**
          * Modifies an inferred query, restricting its possibilities to those specified
@@ -1385,7 +1394,7 @@ namespace ts {
             if (!isTypeInferredQuery(type)) return false;
             const possType = getTypePossibilities(type);
             // TODO(inferred): Perform a more in depth equality comparision
-            const possRestrict = deduplicate(Array.isArray(restrict) ? restrict : getTypePossibilities(restrict), (x, y) => x.id === y.id);
+            const possRestrict = deduplicate(getTypePossibilities(restrict), (x, y) => x.id === y.id);
             const intersected = intersectTypePossibilities(possType, possRestrict);
             const changed = type.types.length !== intersected.length || some(type.types, old => findIndex(intersected, newT => newT === old) === -1);
             type.types = intersected;
@@ -29434,13 +29443,19 @@ namespace ts {
             exprType = getRegularTypeOfObjectLiteral(getBaseTypeOfLiteralType(exprType));
             const targetType = getTypeFromTypeNode(type);
             if (produceDiagnostics && targetType !== errorType) {
-                if (isTypeInferredQuery(exprType) && !restrictInferredQuery(exprType, targetType)) {
-                    error(
-                        errNode,
-                        Diagnostics.Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the_other_If_this_was_intentional_convert_the_expression_to_unknown_first,
-                        typeToString(exprType),
-                        typeToString(targetType),
-                    );
+                // a type assertion on an inferred expression introduces a lower type bound
+                if (isTypeInferredQuery(exprType)) {
+                    // we get the string before restricting, since exprType will be
+                    // never after the restriction if it fails
+                    const exprString = typeToString(exprType);
+                    if (!restrictInferredQuery(exprType, targetType)) {
+                        error(
+                            errNode,
+                            Diagnostics.Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the_other_If_this_was_intentional_convert_the_expression_to_unknown_first,
+                            exprString,
+                            typeToString(targetType),
+                        );
+                    }
                 }
                 else {
                     const widenedType = getWidenedType(exprType);
